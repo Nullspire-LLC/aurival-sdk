@@ -45,6 +45,10 @@ GO_ERRORS_FILE = (
 
 
 def _go_source() -> str:
+    if not GO_ERRORS_FILE.exists():
+        # canonical-only pin: the public mirror ships sdk/ alone, so the Go
+        # catalogue is not there and this guard has nothing to compare against
+        pytest.skip("backend-go/internal/botapi/errors_v1.go is not in this checkout (mirror)", allow_module_level=True)
     return GO_ERRORS_FILE.read_text()
 
 

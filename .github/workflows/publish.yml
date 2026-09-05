@@ -48,7 +48,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+
+      # npm trusted publishing (OIDC) needs npm 11.5.1 or newer; Node 22 bundles 10.x
+      - name: npm that speaks oidc
+        run: npm install -g npm@latest && npm --version
 
       - name: install, typecheck, test, build
         run: |
@@ -62,9 +65,3 @@ jobs:
         run: |
           cd js
           npm publish --provenance --access public
-        env:
-          # BOOTSTRAP-ONLY fallback: remove once the owner configures npm
-          # trusted publishing (OIDC) pointing at this repo's workflow, at
-          # which point NODE_AUTH_TOKEN and the NPM_TOKEN secret can be
-          # deleted entirely.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
