@@ -18,6 +18,7 @@ import { Event } from './events.js';
 import type { Auth } from './auth.js';
 import { defaultLogger } from './http.js';
 import type { HttpClient, Logger } from './http.js';
+import * as status from './status.js';
 
 export const EVENT_COMMAND_INVOKED = 'command.invoked';
 export const EVENT_BACKLOG_OVERFLOWED = 'backlog.overflowed';
@@ -80,6 +81,10 @@ export interface SocketOptions {
   backoffCap?: number | undefined;
   shortWaitRange?: readonly [number, number] | undefined;
   jitter?: (() => number) | undefined;
+  /** Snapshot at construction time — printed once, on the first `hello` (SDK status banners). */
+  botName?: string | undefined;
+  commandCount?: number | undefined;
+  quiet?: boolean | undefined;
 }
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
@@ -160,11 +165,18 @@ export class Socket {
   readonly #backoffCap: number;
   readonly #shortWaitRange: readonly [number, number];
   readonly #jitter: () => number;
+  readonly #botName: string;
+  readonly #commandCount: number;
+  readonly #quiet: boolean;
 
   readonly #seen = new Map<string, undefined>();
   readonly #inFlight = new Map<string, Promise<void>>();
   #generation = 0;
   #backoffN = 0;
+  /** Set the instant a connection ends, cleared on the `hello` that follows — the span is what `reconnected after <duration>` reports. */
+  #droppedAt: number | null = null;
+  /** First `hello` this run ever saw — distinguishes `connected` from `reconnected`, and anchors `disconnected after <uptime>`. */
+  #firstConnectedAt: number | null = null;
 
   constructor(http: HttpClient, auth: Auth, options: SocketOptions) {
     this.#http = http;
@@ -177,9 +189,26 @@ export class Socket {
     this.#backoffCap = options.backoffCap ?? 60;
     this.#shortWaitRange = options.shortWaitRange ?? [1, 5];
     this.#jitter = options.jitter ?? Math.random;
+    this.#botName = options.botName ?? '';
+    this.#commandCount = options.commandCount ?? 0;
+    this.#quiet = status.isQuiet(options.quiet);
   }
 
   async run(signal: AbortSignal): Promise<void> {
+    const runStartedAt = Date.now();
+    try {
+      await this.#runLoop(signal);
+    } finally {
+      // Only a clean stop (SIGINT/SIGTERM) reports `disconnected` — a `raise`
+      // throws through this same `finally` with the signal still live, so
+      // the guard keeps the two banners from ever overlapping.
+      if (signal.aborted) {
+        status.disconnected(Date.now() - (this.#firstConnectedAt ?? runStartedAt), this.#quiet);
+      }
+    }
+  }
+
+  async #runLoop(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       let token: string;
       try {
@@ -191,7 +220,7 @@ export class Socket {
           err instanceof TransportError ||
           err instanceof ProtocolError
         ) {
-          if (await this.#sleepBackoff(signal)) return;
+          if (await this.#sleepBackoff(signal, 'network error')) return;
           continue;
         }
         throw err;
@@ -204,7 +233,7 @@ export class Socket {
       } catch {
         bye = null;
         if (signal.aborted) return;
-        if (await this.#sleepBackoff(signal)) return;
+        if (await this.#sleepBackoff(signal, 'network error')) return;
         continue;
       }
 
@@ -213,25 +242,29 @@ export class Socket {
       if (bye === null) {
         // A close with no `bye`: a network fault, never a designed signal
         // (SOCKET-V1 §1). Escalating backoff, unbounded.
-        if (await this.#sleepBackoff(signal)) return;
+        if (await this.#sleepBackoff(signal, 'network error')) return;
         continue;
       }
 
       const action = actionForBye(bye.code, bye.type);
-      if (action === ByeAction.RAISE) throw bye;
+      if (action === ByeAction.RAISE) {
+        status.stopped(bye.code, bye.message, this.#quiet);
+        throw bye;
+      }
       if (action === ByeAction.REAUTH_RECONNECT) {
+        this.#markDropped();
         try {
           await this.#auth.refresh();
         } catch (err) {
           if (err instanceof AuthenticationError) throw err;
           // The exchange itself is unwell (e.g. `/v1/token` 5xx): keep
           // backing off, never raise (SDK-26).
-          if (await this.#sleepBackoff(signal)) return;
+          if (await this.#sleepBackoff(signal, 'network error')) return;
         }
         continue; // reconnect NOW — no backoff, "once" per connection
       }
       if (action === ByeAction.SHORT_WAIT_RECONNECT) {
-        if (await this.#shortWait(signal)) return;
+        if (await this.#shortWait(signal, bye.code)) return;
         continue;
       }
     }
@@ -334,6 +367,16 @@ export class Socket {
           this.#backoffN = 0;
           stopHeartbeat?.();
           stopHeartbeat = this.#startHeartbeat(ws, heartbeatMs);
+
+          const sessionId = typeof d['session_id'] === 'string' ? d['session_id'] : '';
+          if (this.#firstConnectedAt === null) {
+            this.#firstConnectedAt = Date.now();
+            status.connected(this.#botName, sessionId, this.#commandCount, this.#quiet);
+          } else {
+            const droppedAt = this.#droppedAt;
+            this.#droppedAt = null;
+            if (droppedAt !== null) status.reconnected(Date.now() - droppedAt, this.#quiet);
+          }
         } else if (op === 'heartbeat_ack') {
           // ignore
         } else if (op === 'event') {
@@ -451,15 +494,25 @@ export class Socket {
     }
   }
 
-  async #sleepBackoff(signal: AbortSignal): Promise<boolean> {
-    const delaySeconds = Math.min(this.#backoffCap, this.#backoffBase * 2 ** this.#backoffN);
+  async #sleepBackoff(signal: AbortSignal, reason: string): Promise<boolean> {
+    const base = Math.min(this.#backoffCap, this.#backoffBase * 2 ** this.#backoffN);
     this.#backoffN += 1;
-    return interruptibleSleep(this.#jitter() * delaySeconds * 1000, signal);
+    const actualSeconds = this.#jitter() * base;
+    this.#markDropped();
+    status.reconnecting(reason, actualSeconds, this.#quiet);
+    return interruptibleSleep(actualSeconds * 1000, signal);
   }
 
-  async #shortWait(signal: AbortSignal): Promise<boolean> {
+  async #shortWait(signal: AbortSignal, reason: string): Promise<boolean> {
     const [lo, hi] = this.#shortWaitRange;
     const delaySeconds = lo + this.#jitter() * (hi - lo);
+    this.#markDropped();
+    status.reconnecting(reason, delaySeconds, this.#quiet);
     return interruptibleSleep(delaySeconds * 1000, signal);
+  }
+
+  /** First fault of an outage sets the clock; later retries in the same outage must not reset it. */
+  #markDropped(): void {
+    if (this.#droppedAt === null) this.#droppedAt = Date.now();
   }
 }

@@ -14,6 +14,7 @@ import enum
 import json
 import logging
 import random
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,7 @@ from aurival.events import Event
 if TYPE_CHECKING:
     from aurival.auth import Auth
     from aurival.http import HttpClient
+    from aurival.status import StatusReporter
 
 EVENT_COMMAND_INVOKED = "command.invoked"
 EVENT_BACKLOG_OVERFLOWED = "backlog.overflowed"
@@ -101,6 +103,12 @@ class Socket:
         backoff_cap: float = 60.0,
         short_wait_range: tuple[float, float] = (1.0, 5.0),
         jitter: Callable[[], float] = random.random,
+        # Status UX seam (additive, never wire-affecting): `reporter` prints
+        # the one-line connect/reconnect/stop banners; `bot_name` and
+        # `command_count` are display-only values `Bot` already knows.
+        reporter: StatusReporter | None = None,
+        bot_name: str = "",
+        command_count: int = 0,
     ) -> None:
         self._http = http
         self._auth = auth
@@ -116,6 +124,14 @@ class Socket:
         self._backoff_cap = backoff_cap
         self._short_wait_range = short_wait_range
         self._jitter = jitter
+        self._reporter = reporter
+        self._bot_name = bot_name
+        self._command_count = command_count
+        self._ever_hello = False
+        self._drop_time: float | None = None
+        # Public: `Bot` reads this after a clean `run()` return to print
+        # "disconnected after <uptime>". `None` means we never connected.
+        self.first_connected_at: float | None = None
 
     async def run(self, stop: asyncio.Event) -> None:
         async with aiohttp.ClientSession() as ws_session:
@@ -156,6 +172,8 @@ class Socket:
 
                 action = action_for_bye(bye.code, bye.type)
                 if action is ByeAction.RAISE:
+                    if self._reporter is not None:
+                        self._reporter.stopped(code=bye.code, message=bye.message)
                     raise bye
                 if action is ByeAction.REAUTH_RECONNECT:
                     try:
@@ -165,11 +183,11 @@ class Socket:
                     except (AurivalAPIError, TransportError, ProtocolError):
                         # The exchange itself is unwell (e.g. `/v1/token` 5xx):
                         # keep backing off, never raise (SDK-26).
-                        if await self._sleep_backoff(stop):
+                        if await self._sleep_backoff(stop, reason=bye.code):
                             return
                     continue  # reconnect NOW — no backoff, "once" per connection
                 if action is ByeAction.SHORT_WAIT_RECONNECT:
-                    if await self._short_wait(stop):
+                    if await self._short_wait(stop, reason=bye.code):
                         return
                     continue
 
@@ -186,6 +204,7 @@ class Socket:
                 msg = await self._receive_or_stop(ws, stop)
                 if msg is None:
                     await ws.close()
+                    self._mark_dropped()
                     return None
                 if msg.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -193,6 +212,7 @@ class Socket:
                     aiohttp.WSMsgType.CLOSED,
                     aiohttp.WSMsgType.ERROR,
                 ):
+                    self._mark_dropped()
                     return None
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
@@ -216,6 +236,7 @@ class Socket:
                     # We reached a live session: the next fault is a fresh
                     # problem, not a continuation of the last one.
                     self._backoff_n = 0
+                    self._on_hello(d.get("session_id"))
                     if heartbeat_task is not None:
                         heartbeat_task.cancel()
                     heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws, interval_s))
@@ -230,6 +251,7 @@ class Socket:
                 elif op == "bye":
                     exc = from_envelope(d)
                     self._logger.warning("bot-api bye: %s: %s", exc.code, exc.message)
+                    self._mark_dropped()
                     return exc
                 # else: unknown op. Ignored, never fatal (CONTRACT-V1 §3, §9).
         finally:
@@ -345,16 +367,45 @@ class Socket:
         if len(self._seen) > self._seen_limit:
             self._seen.pop(next(iter(self._seen)))
 
-    async def _sleep_backoff(self, stop: asyncio.Event) -> bool:
+    def _mark_dropped(self) -> None:
+        # Only a connection that had actually said `hello` counts as a drop —
+        # a failed first dial has nothing to reconnect FROM.
+        if self._ever_hello:
+            self._drop_time = time.monotonic()
+
+    def _on_hello(self, session_id: object) -> None:
+        session_id_str = session_id if isinstance(session_id, str) else ""
+        now = time.monotonic()
+        if not self._ever_hello:
+            self._ever_hello = True
+            self.first_connected_at = now
+            if self._reporter is not None:
+                self._reporter.connected(
+                    bot=self._bot_name,
+                    session_id=session_id_str,
+                    command_count=self._command_count,
+                )
+        else:
+            duration = now - self._drop_time if self._drop_time is not None else 0.0
+            if self._reporter is not None:
+                self._reporter.reconnected(duration_s=duration)
+
+    async def _sleep_backoff(self, stop: asyncio.Event, *, reason: str = "network error") -> bool:
         """Escalating backoff, 1s -> 60s cap, full jitter, unbounded."""
         delay = min(self._backoff_cap, self._backoff_base * (2**self._backoff_n))
         self._backoff_n += 1
-        return await self._interruptible_sleep(self._jitter() * delay, stop)
+        delay = self._jitter() * delay
+        if self._reporter is not None:
+            self._reporter.reconnecting(reason=reason, delay_s=delay)
+        return await self._interruptible_sleep(delay, stop)
 
-    async def _short_wait(self, stop: asyncio.Event) -> bool:
+    async def _short_wait(self, stop: asyncio.Event, *, reason: str = "network error") -> bool:
         """ONE jittered wait, not escalating."""
         lo, hi = self._short_wait_range
-        return await self._interruptible_sleep(lo + self._jitter() * (hi - lo), stop)
+        delay = lo + self._jitter() * (hi - lo)
+        if self._reporter is not None:
+            self._reporter.reconnecting(reason=reason, delay_s=delay)
+        return await self._interruptible_sleep(delay, stop)
 
     async def _interruptible_sleep(self, delay: float, stop: asyncio.Event) -> bool:
         """Returns True if `stop` fired during the wait — a SIGINT must never

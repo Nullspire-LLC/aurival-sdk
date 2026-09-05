@@ -8,6 +8,7 @@ import inspect
 import logging
 import signal
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from .errors import AurivalAPIError, AurivalError, KeyRevoked, RateLimitError
 from .events import Command, Context, Event
 from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
+from .status import StatusReporter
 
 Handler = Callable[[Context], Awaitable[None]]
 # The hook also receives a `backlog.overflowed` Event, which is operational
@@ -51,6 +53,7 @@ class Bot:
         host: str | None = None,
         key_path: str | Path | None = None,
         logger: logging.Logger | None = None,
+        quiet: bool = False,
     ) -> None:
         self._registered: dict[str, _Registered] = {}
         self._error_hook: ErrorHook | None = None
@@ -60,6 +63,7 @@ class Bot:
         self._auth: Auth | None = None
         self._http: HttpClient | None = None
         self._inflight: set[asyncio.Task[None]] = set()
+        self._status = StatusReporter(quiet=quiet)
 
     # -- registration ------------------------------------------------------
 
@@ -133,14 +137,24 @@ class Bot:
                 sync_task = await self._sync_commands(http, machine.bot)
                 self._install_signal_handlers(stop)
 
+                self._status.connecting(machine.bot)
                 socket = Socket(
                     http,
                     auth,
                     dispatch=self._dispatch,
                     on_problem=self._on_problem,
                     logger=self._log,
+                    reporter=self._status,
+                    bot_name=machine.bot,
+                    command_count=len(self._registered),
                 )
                 await socket.run(stop)
+                # `run()` only returns (rather than raising) on a clean stop
+                # (SIGINT/SIGTERM) — every fatal path raises instead. `getattr`
+                # keeps this tolerant of a test double standing in for `Socket`.
+                first_connected_at = getattr(socket, "first_connected_at", None)
+                if first_connected_at is not None:
+                    self._status.disconnected(duration_s=time.monotonic() - first_connected_at)
             except KeyRevoked as exc:
                 # The server's sentence is correct and useless on its own: the
                 # developer is looking at a process that will not start, and the

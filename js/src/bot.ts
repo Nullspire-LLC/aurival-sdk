@@ -8,6 +8,7 @@ import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
 import type { Command } from './events.js';
 import type { Logger } from './http.js';
 import { Socket } from './socket.js';
+import * as status from './status.js';
 
 export type Handler = (ctx: Context) => Promise<void> | void;
 
@@ -25,6 +26,8 @@ export interface BotOptions {
   host?: string | undefined;
   keyPath?: string | undefined;
   logger?: Logger | undefined;
+  /** Silences the `aurival: …` status banners on stderr. `AURIVAL_QUIET=1` does the same. */
+  quiet?: boolean | undefined;
 }
 
 interface Registered {
@@ -118,11 +121,13 @@ export class Bot {
   readonly #keyPath: string | undefined;
   #errorHook: ErrorHook | null = null;
   #http: HttpClient | null = null;
+  readonly #quiet: boolean;
 
   constructor(options: BotOptions = {}) {
     this.#log = options.logger ?? defaultLogger();
     this.#host = options.host;
     this.#keyPath = options.keyPath;
+    this.#quiet = status.isQuiet(options.quiet);
   }
 
   // -- registration ------------------------------------------------------
@@ -185,12 +190,16 @@ export class Bot {
 
     const syncRetry = await this.#syncCommands(http, machine.bot, abort);
 
+    status.connecting(machine.bot, this.#quiet);
     const socket = new Socket(http, auth, {
       dispatch: (event) => this.#dispatch(event),
       onProblem: (problem) => {
         void this.#callErrorHook(problem, null);
       },
       logger: this.#log,
+      botName: machine.bot,
+      commandCount: this.#registered.size,
+      quiet: this.#quiet,
     });
     try {
       await socket.run(abort);
