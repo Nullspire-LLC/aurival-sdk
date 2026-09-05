@@ -1,0 +1,59 @@
+{
+  "name": "aurival",
+  "version": "0.1.0",
+  "description": "Write a bot for Aurival. Declare commands, call run(), we handle the rest.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "aurival": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "homepage": "https://bots.aurival.com/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nullspire-LLC/aurival-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nullspire-LLC/aurival-sdk/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.12",
+      "onFail": "warn"
+    }
+  },
+  "keywords": [
+    "aurival",
+    "bot",
+    "chat"
+  ],
+  "author": "Nullspire LLC",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

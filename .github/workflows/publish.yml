@@ -1,0 +1,70 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install build deps
+        run: python -m pip install --upgrade pip build
+
+      - name: run test suite
+        run: |
+          cd python
+          pip install -e '.[dev]'
+          pytest -q
+
+      - name: build sdist and wheel
+        run: |
+          cd python
+          python -m build
+
+      - name: publish to pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: install, typecheck, test, build
+        run: |
+          cd js
+          npm ci
+          npx tsc --noEmit
+          npx vitest run
+          npm run build
+
+      - name: publish to npm
+        run: |
+          cd js
+          npm publish --provenance --access public
+        env:
+          # BOOTSTRAP-ONLY fallback: remove once the owner configures npm
+          # trusted publishing (OIDC) pointing at this repo's workflow, at
+          # which point NODE_AUTH_TOKEN and the NPM_TOKEN secret can be
+          # deleted entirely.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
