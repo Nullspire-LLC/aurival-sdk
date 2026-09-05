@@ -24,8 +24,15 @@ Python 3.10+.
 
 ## Getting started
 
-`pip install aurival`, then `aurival init` in your project directory: it pairs this
-machine and writes the `bot.py` above for you. Run `python bot.py` when it's done.
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install aurival
+aurival init
+```
+
+The venv line matters on current Debian, Ubuntu and Fedora, whose system Python refuses
+`pip install` outside a virtual environment (PEP 668). `aurival init` pairs this machine and
+writes the `bot.py` above for you. Run `python bot.py` when it's done.
 
 ## First run
 
