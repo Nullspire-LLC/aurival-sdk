@@ -27,7 +27,7 @@ Node 22.0–22.10 print `[UNDICI-WS] Warning: WebSockets are experimental` on ev
 that line is expected, comes from Node's own `WebSocket` implementation, and does not mean
 anything is wrong. Node 22.11+ is silent. The floor stays 22.
 
-This is the same package as [`aurival` on PyPI](../python), file for file and name for name.
+This is the same package as [`aurival` on PyPI](https://pypi.org/project/aurival/), file for file and name for name.
 Learn one and you have learned the other.
 
 ## Start from nothing
