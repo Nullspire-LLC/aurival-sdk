@@ -1,12 +1,12 @@
 {
   "name": "aurival",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Write a bot for Aurival. Declare commands, call run(), we handle the rest.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "aurival": "./dist/cli.js"
+    "aurival": "dist/cli.js"
   },
   "exports": {
     ".": {
