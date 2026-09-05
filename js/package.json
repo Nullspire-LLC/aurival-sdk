@@ -16,7 +16,8 @@
   },
   "files": [
     "dist",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "homepage": "https://bots.aurival.com/docs",
   "repository": {

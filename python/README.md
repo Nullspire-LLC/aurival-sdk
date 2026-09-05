@@ -136,3 +136,7 @@ MIGRATE_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=d
 
 **Without that variable the end-to-end test announces that it skipped.** It never passes
 quietly — a suite reporting green when it never reached the service is worse than no suite.
+
+## License
+
+Apache-2.0, see [LICENSE](LICENSE). The Aurival name, wordmark, and mascot are trademarks of Nullspire LLC and are not covered by the license, see [NOTICE](NOTICE).

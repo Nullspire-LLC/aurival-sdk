@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Nullspire LLC" }]
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 keywords = ["aurival", "bot", "chat"]
 classifiers = [
   "Development Status :: 3 - Alpha",

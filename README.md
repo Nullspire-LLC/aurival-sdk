@@ -30,4 +30,4 @@ Full documentation, quick-start guides, and the command reference live at
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) (or each package's `LICENSE` file) for details.
+Apache-2.0, see [LICENSE](LICENSE) (each package ships its own copy). The Aurival name, wordmark, and mascot are trademarks of Nullspire LLC and are not covered by the license, see [NOTICE](NOTICE).
