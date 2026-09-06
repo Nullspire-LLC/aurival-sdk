@@ -88,6 +88,19 @@ frame from the server (your socket stays open), and a `backlog.overflowed` event
 telling you how many events you missed while you were away and where delivery
 resumed. Neither reaches a command handler.
 
+## Shadowed commands
+
+Every `run()` syncs your command list, and the server answers with the chats where another
+bot already holds one of your names. Yours never fires there. The SDK logs one warning
+line per shadowed chat, through the standard `aurival` logger:
+
+```
+WARNING:aurival:command 'ping' is shadowed in chat chat_01j… by another bot's command with the same name, and will never fire there
+```
+
+Rename the command, or get the other bot out of that chat. Nothing else in the SDK reacts
+to it — a shadowed command in one chat is still live in every other.
+
 ## Environment
 
 | variable | what it does |
