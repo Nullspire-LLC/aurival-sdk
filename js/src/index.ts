@@ -74,4 +74,4 @@ export { Context, Event } from './events.js';
 export type { Chat, Command, User } from './events.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 
-export const version = '0.1.4';
+export const version = '0.1.5';
