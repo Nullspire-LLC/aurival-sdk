@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
+from aurival.auth import TOKEN_REFRESH_HEADROOM
 from aurival.errors import (
     AurivalAPIError,
     AuthenticationError,
@@ -38,6 +39,18 @@ EVENT_COMMAND_INVOKED = "command.invoked"
 EVENT_BACKLOG_OVERFLOWED = "backlog.overflowed"
 
 _DEFAULT_HEARTBEAT_S = 30.0
+
+# Rotation may never fire more than once per connection inside this many
+# seconds (SDK-19 cross-check, JS side: MIN_ROTATION_INTERVAL_MS = 30_000).
+# A TTL at or under the refresh headroom makes `deadline - headroom - jitter`
+# land in the past the instant a fresh connection reads it — without a floor,
+# that computes a ~0 delay, refreshes, closes, redials, gets a fresh `hello`,
+# computes another ~0 delay, and repeats: a tight refresh/close/redial loop
+# hammering `/v1/token` from every bot in the fleet at once. If the floor
+# pushes the rotation past the token's actual expiry, we simply do not win
+# the race and the reactive `bye access_token_expired` fallback owns recovery
+# from there, exactly as it does today — graceful degradation, never a loop.
+_MIN_ROTATION_INTERVAL = 30.0
 
 
 class ByeAction(enum.Enum):
@@ -103,6 +116,16 @@ class Socket:
         backoff_cap: float = 60.0,
         short_wait_range: tuple[float, float] = (1.0, 5.0),
         jitter: Callable[[], float] = random.random,
+        # Proactive token-rotation seam (SDK-19): rotate `rotation_headroom`
+        # seconds ahead of `auth.expires_at`, minus up to `rotation_jitter_max`
+        # seconds of jitter so a fleet doesn't rotate in lockstep — jitter is
+        # always SUBTRACTED, never added, so rotation never lands past expiry.
+        # `clock`/`sleep` are the same injectable-seam pattern as `jitter`: a
+        # test drives them with a fake clock instead of waiting real minutes.
+        rotation_headroom: float = TOKEN_REFRESH_HEADROOM,
+        rotation_jitter_max: float = 5.0,
+        clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         # Status UX seam (additive, never wire-affecting): `reporter` prints
         # the one-line connect/reconnect/stop banners; `bot_name` and
         # `command_count` are display-only values `Bot` already knows.
@@ -124,11 +147,25 @@ class Socket:
         self._backoff_cap = backoff_cap
         self._short_wait_range = short_wait_range
         self._jitter = jitter
+        self._rotation_headroom = rotation_headroom
+        self._rotation_jitter_max = rotation_jitter_max
+        self._clock = clock
+        self._sleep = sleep
         self._reporter = reporter
         self._bot_name = bot_name
         self._command_count = command_count
         self._ever_hello = False
         self._drop_time: float | None = None
+        # Set just before a proactive-rotation close so the run loop can tell
+        # "we closed this on purpose" apart from a genuine network fault —
+        # skips backoff, skips the `reconnecting` banner, leaves `_backoff_n`
+        # untouched.
+        self._rotating = False
+        # Set (unconditionally, whether or not the reporter is quiet) at the
+        # exact point a `reconnecting` line is emitted for a drop. Consumed by
+        # the next `hello`: `reconnected` prints only when this is True, so an
+        # expected rotation — which never sets it — prints nothing at all.
+        self._reconnect_pending = False
         # Public: `Bot` reads this after a clean `run()` return to print
         # "disconnected after <uptime>". `None` means we never connected.
         self.first_connected_at: float | None = None
@@ -136,6 +173,16 @@ class Socket:
     async def run(self, stop: asyncio.Event) -> None:
         async with aiohttp.ClientSession() as ws_session:
             while not stop.is_set():
+                # `_rotating` must describe ONLY the connection that is about
+                # to be dialed here, never a leftover from the last one: if a
+                # `bye` frame was already in flight when the rotation timer
+                # called `ws.close()`, `_run_connection` returns that bye
+                # instead of `None`, and the `bye is None` branch below —
+                # which normally consumes and clears the flag — is never
+                # reached. Left uncleared, it would mislabel the NEXT
+                # connection's first genuine network-fault close as a planned
+                # rotation: no `_mark_dropped()`, no backoff, no banner.
+                self._rotating = False
                 try:
                     token = await self._auth.token()
                 except AuthenticationError:
@@ -164,6 +211,12 @@ class Socket:
                     return
 
                 if bye is None:
+                    if self._rotating:
+                        # Our own clean 1000 close from the rotation timer —
+                        # not a fault. Reconnect immediately: no backoff, no
+                        # `_backoff_n` bump, no status line.
+                        self._rotating = False
+                        continue
                     # A close with no `bye`: a network fault, never a designed
                     # signal (SOCKET-V1 §1). Escalating backoff, unbounded.
                     if await self._sleep_backoff(stop):
@@ -201,12 +254,14 @@ class Socket:
         self._generation += 1
         generation = self._generation
         heartbeat_task: asyncio.Task[None] | None = None
+        rotation_task: asyncio.Task[None] = asyncio.create_task(self._rotation_loop(ws))
         try:
             while True:
                 msg = await self._receive_or_stop(ws, stop)
                 if msg is None:
                     await ws.close()
-                    self._mark_dropped()
+                    if not self._rotating:
+                        self._mark_dropped()
                     return None
                 if msg.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -214,7 +269,8 @@ class Socket:
                     aiohttp.WSMsgType.CLOSED,
                     aiohttp.WSMsgType.ERROR,
                 ):
-                    self._mark_dropped()
+                    if not self._rotating:
+                        self._mark_dropped()
                     return None
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
@@ -252,11 +308,21 @@ class Socket:
                     self._on_problem(exc)
                 elif op == "bye":
                     exc = from_envelope(d)
-                    self._logger.warning("bot-api bye: %s: %s", exc.code, exc.message)
+                    if exc.code == "access_token_expired":
+                        # Expected: the rotation timer below preempts this in
+                        # the common case, so a live one only means we lost
+                        # the race (clock skew, a slow refresh) — not a fault
+                        # worth a WARNING (SDK-19).
+                        self._logger.debug("bot-api bye: %s: %s", exc.code, exc.message)
+                    else:
+                        self._logger.warning("bot-api bye: %s: %s", exc.code, exc.message)
                     self._mark_dropped()
                     return exc
                 # else: unknown op. Ignored, never fatal (CONTRACT-V1 §3, §9).
         finally:
+            rotation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await rotation_task
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -296,6 +362,45 @@ class Socket:
             raise
         except Exception:
             return  # connection is gone; the read loop will notice
+
+    async def _rotation_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Proactive token rotation (SDK-19): refresh well ahead of the
+        server's own 15-minute-ish `bye access_token_expired`, so that bye
+        becomes a rare fallback instead of the routine path. One attempt per
+        connection — cancelled by `_run_connection`'s `finally` the moment the
+        connection ends, whichever way.
+        """
+        try:
+            expires_at = self._auth.expires_at
+            while expires_at is None:
+                # `run()` always mints a token before dialing, so this is a
+                # defensive wait, not the expected path.
+                await self._sleep(1.0)
+                if ws.closed:
+                    return
+                expires_at = self._auth.expires_at
+            jitter = self._jitter() * self._rotation_jitter_max
+            deadline = expires_at - self._rotation_headroom - jitter
+            # Floored at _MIN_ROTATION_INTERVAL, not 0.0: a TTL at or under
+            # the headroom would otherwise compute a ~0 delay every single
+            # connection, forever (see the constant's comment above).
+            delay = max(_MIN_ROTATION_INTERVAL, deadline - self._clock())
+            await self._sleep(delay)
+            if ws.closed:
+                return
+            try:
+                await self._auth.refresh()
+            except Exception:
+                # Refresh failed: do NOT close, do NOT re-arm for this
+                # connection. The server's own `bye access_token_expired`
+                # fallback owns recovery from here (SDK-19).
+                return
+            self._logger.debug("aurival: rotating access token")
+            self._rotating = True
+            with contextlib.suppress(Exception):
+                await ws.close(code=aiohttp.WSCloseCode.OK)
+        except asyncio.CancelledError:
+            raise
 
     async def _handle_event(
         self, ws: aiohttp.ClientWebSocketResponse, d: dict, generation: int
@@ -389,14 +494,24 @@ class Socket:
                 )
         else:
             duration = now - self._drop_time if self._drop_time is not None else 0.0
-            if self._reporter is not None:
-                self._reporter.reconnected(duration_s=duration)
+            self._drop_time = None
+            # Only print when a `reconnecting` line actually preceded this
+            # hello (set at the exact call site below, not derived from
+            # `_drop_time`, which is also the duration source and would make
+            # a planned rotation — or the `access_token_expired` bye fallback,
+            # which never backs off either — print a banner nothing warned
+            # about first.
+            if self._reconnect_pending:
+                self._reconnect_pending = False
+                if self._reporter is not None:
+                    self._reporter.reconnected(duration_s=duration)
 
     async def _sleep_backoff(self, stop: asyncio.Event, *, reason: str = "network error") -> bool:
         """Escalating backoff, 1s -> 60s cap, full jitter, unbounded."""
         delay = min(self._backoff_cap, self._backoff_base * (2**self._backoff_n))
         self._backoff_n += 1
         delay = self._jitter() * delay
+        self._reconnect_pending = True
         if self._reporter is not None:
             self._reporter.reconnecting(reason=reason, delay_s=delay)
         return await self._interruptible_sleep(delay, stop)
@@ -405,6 +520,7 @@ class Socket:
         """ONE jittered wait, not escalating."""
         lo, hi = self._short_wait_range
         delay = lo + self._jitter() * (hi - lo)
+        self._reconnect_pending = True
         if self._reporter is not None:
             self._reporter.reconnecting(reason=reason, delay_s=delay)
         return await self._interruptible_sleep(delay, stop)

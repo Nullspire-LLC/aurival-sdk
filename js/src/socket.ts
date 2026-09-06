@@ -16,6 +16,7 @@ import {
 } from './errors.js';
 import { Event } from './events.js';
 import type { Auth } from './auth.js';
+import { TOKEN_REFRESH_HEADROOM_MS } from './auth.js';
 import { defaultLogger } from './http.js';
 import type { HttpClient, Logger } from './http.js';
 import * as status from './status.js';
@@ -85,9 +86,32 @@ export interface SocketOptions {
   botName?: string | undefined;
   commandCount?: number | undefined;
   quiet?: boolean | undefined;
+  /** Upper bound (ms) of the jitter SUBTRACTED from the rotation deadline, so
+   * a fleet sharing one token TTL does not rotate in lockstep. The result is
+   * always at or before `expires_at - headroom`, never after (SDK
+   * bot-api-curation). */
+  rotationJitterMs?: number | undefined;
+  /** Overrides `MIN_ROTATION_INTERVAL_MS` — production never sets this;
+   * tests use it to exercise the floor's behaviour without a real 30s wait. */
+  minRotationIntervalMs?: number | undefined;
 }
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
+const DEFAULT_ROTATION_JITTER_MS = 5_000;
+/**
+ * Rotation may never fire more than once per connection inside this window,
+ * full stop — not a per-rotation clamp on a single negative timeout, but a
+ * floor on how often the cycle itself may repeat. A token whose TTL is at or
+ * under the refresh headroom would otherwise compute a deadline already in
+ * the past on EVERY connection: refresh, close, redial, `hello`, compute a
+ * negative deadline again, fire again moments later — a tight refresh/close/
+ * redial loop hammering `/v1/token` from every bot in the fleet at once.
+ * If this floor pushes rotation past the token's actual expiry (a TTL so
+ * short proactive rotation cannot help at all), we simply lose the race —
+ * graceful degradation, never a hot loop — and the reactive
+ * `bye access_token_expired` fallback owns recovery exactly as it does today.
+ */
+const MIN_ROTATION_INTERVAL_MS = 30_000;
 
 /** A frame the read loop can wait on without sitting behind a raw callback. */
 type ConnEvent = { kind: 'message'; data: string | null } | { kind: 'close' } | { kind: 'error' };
@@ -168,6 +192,8 @@ export class Socket {
   readonly #botName: string;
   readonly #commandCount: number;
   readonly #quiet: boolean;
+  readonly #rotationJitterMs: number;
+  readonly #minRotationIntervalMs: number;
 
   readonly #seen = new Map<string, undefined>();
   readonly #inFlight = new Map<string, Promise<void>>();
@@ -177,6 +203,13 @@ export class Socket {
   #droppedAt: number | null = null;
   /** First `hello` this run ever saw — distinguishes `connected` from `reconnected`, and anchors `disconnected after <uptime>`. */
   #firstConnectedAt: number | null = null;
+  /** True only between `status.reconnecting(...)` actually firing and the next `hello` consuming it — gates `reconnected after <duration>` so an expected event (a planned rotation, or the REAUTH_RECONNECT bye fallback) never prints a "reconnected" with no preceding "reconnecting". */
+  #announcedReconnecting = false;
+  /** Set by `#rotateToken` right before its own clean 1000 close, consumed by
+   * the run loop's next `bye === null` branch — distinguishes a planned
+   * rotation close from an ordinary network-fault close, which the outer loop
+   * would otherwise treat identically (backoff + a "reconnecting" line). */
+  #rotating = false;
 
   constructor(http: HttpClient, auth: Auth, options: SocketOptions) {
     this.#http = http;
@@ -192,6 +225,8 @@ export class Socket {
     this.#botName = options.botName ?? '';
     this.#commandCount = options.commandCount ?? 0;
     this.#quiet = status.isQuiet(options.quiet);
+    this.#rotationJitterMs = options.rotationJitterMs ?? DEFAULT_ROTATION_JITTER_MS;
+    this.#minRotationIntervalMs = options.minRotationIntervalMs ?? MIN_ROTATION_INTERVAL_MS;
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -226,6 +261,14 @@ export class Socket {
         throw err;
       }
 
+      // Reset at the START of each connection attempt, not just when
+      // consumed below: a `bye` frame can already be queued (or arrive)
+      // before our own 1000 close lands, in which case `#runConnection`
+      // returns that `bye` instead of `null` and the flag would otherwise
+      // survive into the NEXT connection — mislabeling its first genuine
+      // network fault as a planned rotation (no backoff, no status line).
+      this.#rotating = false;
+
       let bye: AurivalAPIError | null;
       try {
         const ws = await this.#connect(this.#http.gatewayUrl(), token, signal);
@@ -240,6 +283,12 @@ export class Socket {
       if (signal.aborted) return;
 
       if (bye === null) {
+        if (this.#rotating) {
+          // Our own clean 1000 close from a proactive token rotation — not a
+          // fault. Reconnect immediately: no backoff, no status line.
+          this.#rotating = false;
+          continue;
+        }
         // A close with no `bye`: a network fault, never a designed signal
         // (SOCKET-V1 §1). Escalating backoff, unbounded.
         if (await this.#sleepBackoff(signal, 'network error')) return;
@@ -329,6 +378,7 @@ export class Socket {
     ws.onerror = () => queue.push({ kind: 'error' });
 
     let stopHeartbeat: (() => void) | null = null;
+    let stopRotation: (() => void) | null = null;
     try {
       for (;;) {
         const item = await raceAbort(queue.next(), signal);
@@ -367,6 +417,8 @@ export class Socket {
           this.#backoffN = 0;
           stopHeartbeat?.();
           stopHeartbeat = this.#startHeartbeat(ws, heartbeatMs);
+          stopRotation?.();
+          stopRotation = this.#startRotationTimer(ws, generation);
 
           const sessionId = typeof d['session_id'] === 'string' ? d['session_id'] : '';
           if (this.#firstConnectedAt === null) {
@@ -375,7 +427,15 @@ export class Socket {
           } else {
             const droppedAt = this.#droppedAt;
             this.#droppedAt = null;
-            if (droppedAt !== null) status.reconnected(Date.now() - droppedAt, this.#quiet);
+            const announced = this.#announcedReconnecting;
+            this.#announcedReconnecting = false;
+            // Only print `reconnected after <duration>` when a `reconnecting`
+            // line actually preceded it — a planned rotation (or the
+            // REAUTH_RECONNECT bye fallback) never announced one, so it must
+            // stay silent end to end.
+            if (droppedAt !== null && announced) {
+              status.reconnected(Date.now() - droppedAt, this.#quiet);
+            }
           }
         } else if (op === 'heartbeat_ack') {
           // ignore
@@ -387,13 +447,82 @@ export class Socket {
           this.#onProblem(exc);
         } else if (op === 'bye') {
           const exc = fromEnvelope(d);
-          this.#logger.warn(`bot-api bye: ${exc.code}: ${exc.message}`);
+          // The reactive access_token_expired bye is expected roughly every
+          // 15 minutes for every bot in the fleet (and now, doubly so, races
+          // harmlessly against our own proactive rotation) — routine, not a
+          // WARNING. Every other code is still worth a human's attention.
+          if (exc.code === 'access_token_expired') {
+            this.#logger.debug(`bot-api bye: ${exc.code}: ${exc.message}`);
+          } else {
+            this.#logger.warn(`bot-api bye: ${exc.code}: ${exc.message}`);
+          }
           return exc;
         }
         // else: unknown op. Ignored, never fatal (CONTRACT-V1 §3, §9).
       }
     } finally {
       stopHeartbeat?.();
+      stopRotation?.();
+    }
+  }
+
+  /**
+   * Proactively refreshes the access token ahead of the server's own
+   * ~15-minute `bye access_token_expired`, then reconnects immediately with
+   * the new token — a clean client close (code 1000), never a fault.
+   *
+   * Fires at `expires_at - headroom - jitter`: always at or before the exact
+   * instant `Auth#token()` would itself consider the cached token stale, so
+   * this timer always wins the race against the reactive fallback. On a
+   * refresh failure this does nothing further — the reactive
+   * `access_token_expired` bye (DECISIONS SDK-26/SDK-39 REAUTH_RECONNECT)
+   * still owns recovery.
+   */
+  #startRotationTimer(ws: WebSocket, generation: number): () => void {
+    const deadlineMs = this.#nextRotationDeadlineMs();
+    if (deadlineMs === null) return () => {};
+    let stopped = false;
+    const delay = Math.max(this.#minRotationIntervalMs, deadlineMs - Date.now());
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      if (stopped) return;
+      void this.#rotateToken(ws, generation);
+    }, delay);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }
+
+  /** `null` before the very first token exchange has ever completed — there
+   * is nothing to schedule against yet. */
+  #nextRotationDeadlineMs(): number | null {
+    const expiresAtMs = this.#auth.expiresAtMs;
+    if (expiresAtMs === null) return null;
+    const jitterMs = this.#jitter() * this.#rotationJitterMs;
+    return expiresAtMs - TOKEN_REFRESH_HEADROOM_MS - jitterMs;
+  }
+
+  async #rotateToken(ws: WebSocket, generation: number): Promise<void> {
+    try {
+      await this.#auth.refresh();
+    } catch {
+      // The exchange itself is unwell; do nothing here and let the
+      // server's own access_token_expired bye drive recovery instead.
+      return;
+    }
+    // The connection this timer was armed for may already be gone (a `bye`
+    // or a network fault beat the refresh to it) — in which case a NEWER
+    // connection now owns `#generation`. Closing a dead `ws` is harmless,
+    // but setting `#rotating` here would falsely mark the CURRENT
+    // connection's next fault as a planned rotation. Only the timer's own
+    // connection may still act.
+    if (generation !== this.#generation) return;
+    this.#logger.debug('aurival: rotating access token');
+    this.#rotating = true;
+    try {
+      ws.close(1000);
+    } catch {
+      // the connection is already gone — nothing left to close
     }
   }
 
@@ -499,6 +628,7 @@ export class Socket {
     this.#backoffN += 1;
     const actualSeconds = this.#jitter() * base;
     this.#markDropped();
+    this.#announcedReconnecting = true;
     status.reconnecting(reason, actualSeconds, this.#quiet);
     return interruptibleSleep(actualSeconds * 1000, signal);
   }
@@ -507,6 +637,7 @@ export class Socket {
     const [lo, hi] = this.#shortWaitRange;
     const delaySeconds = lo + this.#jitter() * (hi - lo);
     this.#markDropped();
+    this.#announcedReconnecting = true;
     status.reconnecting(reason, delaySeconds, this.#quiet);
     return interruptibleSleep(delaySeconds * 1000, signal);
   }

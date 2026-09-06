@@ -34,7 +34,9 @@ import { DEFAULT_HOST, defaultLogger } from './http.js';
 // token.go: AssertionMaxAge. auth owns 60s of refresh headroom ahead of a
 // 15-minute access-token TTL (SDK-37).
 const ASSERTION_MAX_AGE_S = 120;
-const TOKEN_REFRESH_HEADROOM_MS = 60_000;
+// Exported so socket.ts's proactive rotation timer (SDK bot-api-curation) can
+// reuse the exact same headroom rather than drifting its own copy.
+export const TOKEN_REFRESH_HEADROOM_MS = 60_000;
 const DEFAULT_PAIR_RETRY_AFTER_MS = 60_000;
 
 // botapi.go:158 — a custom base32 alphabet, no padding. Not RFC 4648.
@@ -267,6 +269,13 @@ export class Auth {
     this.bot = machine.bot;
     this.#logger = logger ?? defaultLogger();
     this.#keyPath = keyPath ?? null;
+  }
+
+  /** The current token's absolute expiry, or `null` before the first exchange.
+   * Read-only mirror of the private field — socket.ts's rotation timer needs
+   * it to compute a deadline, never to mutate it (SDK bot-api-curation). */
+  get expiresAtMs(): number | null {
+    return this.#expiresAtMs;
   }
 
   #fresh(): boolean {

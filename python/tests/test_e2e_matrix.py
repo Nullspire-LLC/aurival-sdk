@@ -139,15 +139,24 @@ def run_bot(tmp_path: Path) -> Callable[..., BotProcess]:
     """Start a bot process in its own directory, torn down at the end."""
     started: list[BotProcess] = []
 
-    def start(bed: Testbed, source: str = PING_BOT, *, directory: Path | None = None) -> BotProcess:
+    def start(
+        bed: Testbed,
+        source: str = PING_BOT,
+        *,
+        directory: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> BotProcess:
         directory = directory or tmp_path / f"bot{len(started)}"
         directory.mkdir(parents=True, exist_ok=True)
         script = directory / "bot.py"
         script.write_text(source)
+        proc_env = bot_env(bed, directory)
+        if env:
+            proc_env.update(env)
         proc = subprocess.Popen(
             [sys.executable, str(script)],
             cwd=directory,
-            env=bot_env(bed, directory),
+            env=proc_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -381,10 +390,19 @@ def test_s5_a_token_expiring_mid_session_is_invisible_to_the_developer(
     """Every healthy bot meets this every fifteen minutes in production.
 
     The server closes the socket at its own token's `exp` regardless of what the
-    client believes (gateway.go:432-443), so this is not a client-side timer
-    being tested: the bye really arrives. The SDK must re-sign, exchange and
-    reconnect IMMEDIATELY with no backoff, and the developer's bot must keep
-    answering across it.
+    client believes (gateway.go:432-443), so a real expiry-driven close is what
+    this was written to prove survivable. SDK-19 changed WHICH path normally
+    gets there: the SDK now rotates proactively ahead of `exp` (refresh, clean
+    1000 close, immediate reconnect), so the routine case no longer waits for
+    the server's own `bye access_token_expired` at all — that bye is now the
+    FALLBACK for a rotation that lost the race, not the common path. Waiting on
+    it here would hang for the life of this test, since the rotation preempts
+    it every time.
+
+    The intent is unchanged: prove the token really rotates under a live
+    session and events keep flowing across it. We watch for the rotation's own
+    `aurival: rotating access token` DEBUG line instead (AURIVAL_DEBUG=1 turns
+    it on), which fires once per socket connection at `exp - 60s` headroom.
 
     75 seconds, not 15 minutes: AURIVAL_TESTBED_TOKEN_TTL exists for this. It is
     above the SDK's own 60s refresh headroom on purpose — below it the client
@@ -392,17 +410,17 @@ def test_s5_a_token_expiring_mid_session_is_invisible_to_the_developer(
     path while claiming to test expiry (the testbed refuses such a value).
     """
     bed = testbed_factory(AURIVAL_TESTBED_TOKEN_TTL="75")
-    bot = ready_bot(bed, run_bot)
+    bot = ready_bot(bed, run_bot, env={"AURIVAL_DEBUG": "1"})
 
-    bot.wait_for(r"bot-api bye: access_token_expired", timeout=150)
+    bot.wait_for(r"aurival: rotating access token", timeout=150)
 
     # THE PROOF IS THAT IT STILL WORKS, not that a line was logged. A reconnect
     # that fails leaves the same line in the transcript.
-    assert bot.proc.poll() is None, f"the bot exited on token expiry:\n{bot.transcript()}"
+    assert bot.proc.poll() is None, f"the bot exited while rotating its token:\n{bot.transcript()}"
     invoke(bed, "/ping")
     wait_until(
         lambda: len(replies(bed)) >= 2,
-        "the bot did not answer after its token expired and it reconnected",
+        "the bot did not answer after its token rotated and it reconnected",
         timeout=60,
     )
 

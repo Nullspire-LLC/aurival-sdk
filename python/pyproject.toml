@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurival"
-version = "0.1.6"
+version = "0.1.7"
 description = "Write a bot for Aurival. Declare commands, call run(), we handle the rest."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,7 @@ Repository = "https://github.com/Nullspire-LLC/aurival-sdk"
 Issues = "https://github.com/Nullspire-LLC/aurival-sdk/issues"
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.16.6"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.16.6", "build==1.6.0"]
 
 [project.scripts]
 aurival = "aurival.cli:main"

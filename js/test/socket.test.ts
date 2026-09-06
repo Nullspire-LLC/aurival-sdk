@@ -27,13 +27,19 @@ import {
 // Harness
 // --------------------------------------------------------------------------
 
-/** Duck-types `Auth`: `token()` / `refresh()`. Errors queue FIFO. */
+/** Duck-types `Auth`: `token()` / `refresh()` / `expiresAtMs`. Errors queue FIFO. */
 export class FakeAuth {
   tokenCalls = 0;
   refreshCalls = 0;
+  /** `performance.now()`-scale seconds `refresh()` last completed at —
+   * comparable with `wsserver.ts`'s `ReceivedClose.at`, so a test can prove
+   * refresh happened BEFORE a close, not just that it happened at all. */
+  refreshCompletedAt: number[] = [];
+  expiresAtMs: number | null = null;
   #token: string;
   #tokenErrors: Error[] = [];
   #refreshErrors: Error[] = [];
+  #nextExpiresAtMs: number | null = null;
 
   constructor(token = 'tok-0') {
     this.#token = token;
@@ -47,6 +53,28 @@ export class FakeAuth {
     this.#refreshErrors.push(err);
   }
 
+  /** Sets `expiresAtMs` now, and what it becomes again after the NEXT
+   * successful `refresh()` (a real exchange always renews the expiry). */
+  setExpiresAtMs(ms: number | null): void {
+    this.expiresAtMs = ms;
+    this.#nextExpiresAtMs = ms;
+  }
+
+  #refreshGate: Promise<void> | null = null;
+
+  /** Makes the NEXT `refresh()` call hang until the returned function is
+   * invoked — lets a test deterministically reproduce a rotation whose
+   * refresh is still in flight when the connection that started it has
+   * already moved on (SDK bot-api-curation: a stale rotation must not
+   * pollute a LATER connection once its own refresh finally resolves). */
+  holdNextRefresh(): () => void {
+    let release!: () => void;
+    this.#refreshGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    return release;
+  }
+
   async token(): Promise<string> {
     this.tokenCalls += 1;
     const err = this.#tokenErrors.shift();
@@ -56,9 +84,16 @@ export class FakeAuth {
 
   async refresh(): Promise<string> {
     this.refreshCalls += 1;
+    if (this.#refreshGate) {
+      const gate = this.#refreshGate;
+      this.#refreshGate = null; // only the one held call waits
+      await gate;
+    }
     const err = this.#refreshErrors.shift();
     if (err) throw err;
     this.#token = `${this.#token}+r${this.refreshCalls}`;
+    if (this.#nextExpiresAtMs !== null) this.expiresAtMs = this.#nextExpiresAtMs;
+    this.refreshCompletedAt.push(performance.now() / 1000);
     return this.#token;
   }
 }
@@ -99,6 +134,8 @@ export interface MakeSocketOverrides {
   backoffCap?: number | undefined;
   shortWaitRange?: readonly [number, number] | undefined;
   jitter?: (() => number) | undefined;
+  rotationJitterMs?: number | undefined;
+  minRotationIntervalMs?: number | undefined;
 }
 
 export interface MadeSocket {
@@ -135,6 +172,8 @@ export function makeSocket(
     backoffCap: overrides.backoffCap ?? 0.05,
     shortWaitRange: overrides.shortWaitRange ?? [0.02, 0.03],
     jitter: overrides.jitter ?? (() => 0.5),
+    rotationJitterMs: overrides.rotationJitterMs,
+    minRotationIntervalMs: overrides.minRotationIntervalMs,
   });
   return { socket, dispatched, problems };
 }

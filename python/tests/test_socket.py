@@ -31,12 +31,23 @@ class FakeAuth:
     """Duck-types `Auth`: `token()` / `refresh()`. Errors are queued FIFO so a
     test can script "fail once, then succeed"."""
 
-    def __init__(self, token: str = "tok-0") -> None:
+    def __init__(
+        self, token: str = "tok-0", expires_at: float | None = None, ttl: float = 900.0
+    ) -> None:
         self._token = token
         self.token_calls = 0
         self.refresh_calls = 0
         self._token_errors: list[Exception] = []
         self._refresh_errors: list[Exception] = []
+        # `None` by default: the rotation timer's "wait for a token" branch
+        # then just spins harmlessly until the connection tears down — most
+        # tests here don't care about rotation at all.
+        self.expires_at = expires_at
+        # A real exchange always returns a fresh, further-out `expires_at` —
+        # a successful `refresh()` here pushes it out by `ttl` too, so a
+        # rotation test's SECOND deadline lands well beyond the test's own
+        # window rather than immediately re-firing at the old one.
+        self._ttl = ttl
 
     def fail_token_next(self, exc: Exception) -> None:
         self._token_errors.append(exc)
@@ -55,6 +66,8 @@ class FakeAuth:
         if self._refresh_errors:
             raise self._refresh_errors.pop(0)
         self._token = f"{self._token}+r{self.refresh_calls}"
+        if self.expires_at is not None:
+            self.expires_at += self._ttl
         return self._token
 
 
@@ -74,6 +87,10 @@ class ServerState:
         self.connect_times: list[float] = []
         # (connection index, op, d) for every client -> server frame
         self.received: list[tuple[int, str, dict]] = []
+        # `Authorization` header (raw, "Bearer <token>") the client dialed
+        # with, per connection index — lets a test prove a reconnect actually
+        # used the new token rather than merely that a refresh was called.
+        self.auth_headers: list[str | None] = []
 
     def acks_for(self, conn_idx: int) -> list[str]:
         return [d["event_id"] for i, op, d in self.received if i == conn_idx and op == "ack"]
@@ -90,6 +107,7 @@ def build_app(state: ServerState, script: Script) -> web.Application:
         idx = state.connect_count
         state.connect_count += 1
         state.connect_times.append(time.monotonic())
+        state.auth_headers.append(request.headers.get("Authorization"))
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 

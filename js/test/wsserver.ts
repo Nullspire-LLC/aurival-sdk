@@ -92,11 +92,20 @@ export interface ReceivedFrame {
   d: Record<string, unknown>;
 }
 
+/** One client-initiated close frame, decoded (SDK bot-api-curation: proactive
+ * token rotation must close with code 1000, and only 1000). */
+export interface ReceivedClose {
+  connIdx: number;
+  code: number | null;
+  at: number;
+}
+
 /** Mirrors `test_socket.py`'s `ServerState`. */
 export class ServerState {
   connectCount = 0;
   connectTimes: number[] = [];
   received: ReceivedFrame[] = [];
+  closes: ReceivedClose[] = [];
 
   acksFor(connIdx: number): string[] {
     return this.received
@@ -106,6 +115,10 @@ export class ServerState {
 
   heartbeatsFor(connIdx: number): number {
     return this.received.filter((f) => f.connIdx === connIdx && f.op === 'heartbeat').length;
+  }
+
+  closeFor(connIdx: number): ReceivedClose | null {
+    return this.closes.find((c) => c.connIdx === connIdx) ?? null;
   }
 }
 
@@ -165,6 +178,8 @@ export async function startGateway(script: Script): Promise<GatewayServer> {
     const parser = new FrameParser((opcode, payload) => {
       if (opcode === 0x8) {
         closed = true;
+        const code = payload.length >= 2 ? payload.readUInt16BE(0) : null;
+        state.closes.push({ connIdx: idx, code, at: performance.now() / 1000 });
         socket.end();
         return;
       }

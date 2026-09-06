@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,29 @@ if TYPE_CHECKING:
     from .auth import Auth
 
 DEFAULT_HOST = "https://bots.aurival.com"
+
+_AURIVAL_DEBUG_ENV = "AURIVAL_DEBUG"
+
+
+def _default_logger() -> logging.Logger:
+    """The "aurival" logger, built once at import time. Left alone, an
+    unconfigured Python logger already sends WARNING+ to stderr via the
+    logging module's last-resort handler — the only thing missing is
+    debug/info visibility, which `AURIVAL_DEBUG=1` turns on here (mirrors
+    `sdk/js/src/http.ts`'s `defaultLogger()`, same env var name, so it means
+    the same thing in both SDKs). Never touches a `Bot(logger=...)` a caller
+    supplied explicitly — this only shapes the shared default instance.
+    """
+    logger = logging.getLogger("aurival")
+    if os.environ.get(_AURIVAL_DEBUG_ENV) == "1" and not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+    return logger
+
+
+_log = _default_logger()
 
 # Both the rate-limit lane and the api_error/transport lane are bounded here
 # (SDK-26): this many tries total, first attempt included.
@@ -72,7 +96,7 @@ class HttpClient:
         self._session = session
         self._host = host.rstrip("/")
         self._auth = auth
-        self._logger = logger or logging.getLogger("aurival")
+        self._logger = logger or _log
         # Injectable so a retry/backoff test never actually waits.
         self._sleep = asyncio.sleep
 

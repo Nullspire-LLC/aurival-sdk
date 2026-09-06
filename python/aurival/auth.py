@@ -55,6 +55,11 @@ _ASSERTION_MAX_AGE = 120
 _TOKEN_REFRESH_HEADROOM = 60.0
 _DEFAULT_PAIR_RETRY_AFTER = 60.0
 
+# Public alias: `Socket`'s proactive-rotation timer (SDK-19) reuses this exact
+# headroom rather than defining its own, so the two lanes that race the same
+# 15-minute TTL agree on when "about to expire" starts.
+TOKEN_REFRESH_HEADROOM = _TOKEN_REFRESH_HEADROOM
+
 # botapi.go:158 — a custom base32 alphabet, no padding. Not base64.b32encode.
 _B32_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 
@@ -218,6 +223,12 @@ class Auth:
         self._token: str | None = None
         self._expires_at: float | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def expires_at(self) -> float | None:
+        """Epoch seconds the held token expires at, or `None` before the
+        first exchange. Read-only seam for `Socket`'s rotation timer."""
+        return self._expires_at
 
     def _fresh(self) -> bool:
         return (

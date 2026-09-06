@@ -157,7 +157,7 @@ Two, and each is here for a reason:
 | [`aiohttp`](https://pypi.org/project/aiohttp/) | `3.14.3` | HTTP **and** the websocket, one library doing both. Two libraries where one would do is a dependency we would be choosing. |
 | [`cryptography`](https://pypi.org/project/cryptography/) | `50.0.1` | Ed25519 signing. PyCA-maintained with prebuilt wheels and first-class Ed25519 — hand-rolling it would be a security review we do not want to own. |
 
-Development only: `pytest 9.1.1`, `pytest-asyncio 1.4.0`, `ruff 0.16.6`, `setuptools 84.0.0`.
+Development only: `pytest 9.1.1`, `pytest-asyncio 1.4.0`, `ruff 0.16.6`, `build 1.6.0`, `setuptools 84.0.0`.
 
 Every version was resolved from PyPI at build time (2026-09-05) and pinned. None came from
 memory.
