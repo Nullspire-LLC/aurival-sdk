@@ -13,6 +13,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 BACKEND = REPO / "backend-go"
+SDK = REPO / "sdk" / "python"
 
 DSN_ENV = "MIGRATE_TEST_DATABASE_URL"
 
@@ -33,6 +34,40 @@ class Testbed:
 
     def __getitem__(self, key: str) -> str:
         return self.handshake[key]
+
+
+# Loader/toolchain variables a parent environment may need to hand its child
+# interpreter so the interpreter can even START. `actions/setup-python`'s
+# tool-cache CPython is built `--enable-shared`, so it needs `LD_LIBRARY_PATH`
+# to find its own `libpython3.NN.so` — a system python (static, no such
+# dependency) never surfaces the gap locally. None of these carry an
+# event-allowlist or app secret, so passing them through does not reopen
+# BA-R28/S14 (test_a_bot_gets_events_with_no_allowlist_anywhere_in_the_environment,
+# in test_e2e_matrix.py): the scrub of `AURIVAL_*`/`BOT_*` parent state stays exactly as it was.
+BOT_ENV_PASSTHROUGH = ("LD_LIBRARY_PATH",)
+
+
+def bot_env(bed: Testbed, directory: Path) -> dict[str, str]:
+    """The environment a spawned bot process gets.
+
+    Built from a deliberately minimal, explicit base — never a copy of the
+    parent environment — so no `AURIVAL_*`/`BOT_*` secret or allowlist var
+    the test process happens to carry can reach the child. The only parent
+    state that crosses is the small loader passthrough above, and only when
+    the parent actually has it set.
+    """
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(directory),
+        "AURIVAL_API": bed.host,
+        "PYTHONPATH": str(SDK),
+        "PYTHONUNBUFFERED": "1",
+    }
+    for name in BOT_ENV_PASSTHROUGH:
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
+
 
 
 def _skip_reason() -> str | None:

@@ -31,7 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.conftest import Testbed
+from tests.conftest import Testbed, bot_env
 
 REPO = Path(__file__).resolve().parents[3]
 SDK = REPO / "sdk" / "python"
@@ -134,39 +134,6 @@ class BotProcess:
                 self.proc.kill()
 
 
-# Loader/toolchain variables a parent environment may need to hand its child
-# interpreter so the interpreter can even START. `actions/setup-python`'s
-# tool-cache CPython is built `--enable-shared`, so it needs `LD_LIBRARY_PATH`
-# to find its own `libpython3.NN.so` — a system python (static, no such
-# dependency) never surfaces the gap locally. None of these carry an
-# event-allowlist or app secret, so passing them through does not reopen
-# BA-R28/S14 (test_a_bot_gets_events_with_no_allowlist_anywhere_in_the_environment
-# above): the scrub of `AURIVAL_*`/`BOT_*` parent state stays exactly as it was.
-BOT_ENV_PASSTHROUGH = ("LD_LIBRARY_PATH",)
-
-
-def bot_env(bed: Testbed, directory: Path) -> dict[str, str]:
-    """The environment a spawned bot process gets.
-
-    Built from a deliberately minimal, explicit base — never a copy of the
-    parent environment — so no `AURIVAL_*`/`BOT_*` secret or allowlist var
-    the test process happens to carry can reach the child. The only parent
-    state that crosses is the small loader passthrough above, and only when
-    the parent actually has it set.
-    """
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(directory),
-        "AURIVAL_API": bed.host,
-        "PYTHONPATH": str(SDK),
-        "PYTHONUNBUFFERED": "1",
-    }
-    for name in BOT_ENV_PASSTHROUGH:
-        if name in os.environ:
-            env[name] = os.environ[name]
-    return env
-
-
 @pytest.fixture
 def run_bot(tmp_path: Path) -> Callable[..., BotProcess]:
     """Start a bot process in its own directory, torn down at the end."""
@@ -210,9 +177,18 @@ def test_bot_env_passes_through_the_loader_path(
     assert env["LD_LIBRARY_PATH"] == "/opt/tool-cache/python/3.10.21/x64/lib"
 
 
-def test_bot_env_omits_the_loader_path_when_the_parent_has_none(tmp_path: Path) -> None:
+def test_bot_env_omits_the_loader_path_when_the_parent_has_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """The passthrough is conditional, not a blanket copy of the parent
-    environment — no `LD_LIBRARY_PATH` key should appear from nowhere."""
+    environment — no `LD_LIBRARY_PATH` key should appear from nowhere.
+
+    The parent is put in the state this asserts, not merely hoped to be in
+    it: CI's `actions/setup-python` exports `LD_LIBRARY_PATH` for its own
+    tool-cache interpreter, so a test that trusted the ambient environment to
+    already lack the variable passed locally and failed in CI.
+    """
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     bed = SimpleNamespace(host="http://127.0.0.1:0")
     env = bot_env(bed, tmp_path)
     assert "LD_LIBRARY_PATH" not in env

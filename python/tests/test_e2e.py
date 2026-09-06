@@ -20,8 +20,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[3]
-SDK = REPO / "sdk" / "python"
+from tests.conftest import bot_env
 
 BOT_SOURCE = """
 import logging
@@ -117,17 +116,10 @@ def running_bot(testbed, tmp_path: Path):
     """A bot process in a clean directory, so ./.aurival is this test's own."""
     script = tmp_path / "ping_bot.py"
     script.write_text(BOT_SOURCE)
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-        "AURIVAL_API": testbed.host,
-        "PYTHONPATH": str(SDK),
-        "PYTHONUNBUFFERED": "1",
-    }
     proc = subprocess.Popen(
         [sys.executable, str(script)],
         cwd=tmp_path,
-        env=env,
+        env=bot_env(testbed, tmp_path),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -259,20 +251,13 @@ def test_a_second_run_does_not_pair_again(testbed, tmp_path: Path) -> None:
     same directory and assert it never prints a code."""
     script = tmp_path / "ping_bot.py"
     script.write_text(BOT_SOURCE)
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-        "AURIVAL_API": testbed.host,
-        "PYTHONPATH": str(SDK),
-        "PYTHONUNBUFFERED": "1",
-    }
 
     def spawn() -> _Bot:
         return _Bot(
             subprocess.Popen(
                 [sys.executable, str(script)],
                 cwd=tmp_path,
-                env=env,
+                env=bot_env(testbed, tmp_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
