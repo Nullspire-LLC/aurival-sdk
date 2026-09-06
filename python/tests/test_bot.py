@@ -12,7 +12,7 @@ import pytest
 
 from aurival import bot as bot_module
 from aurival.bot import Bot
-from aurival.errors import RateLimited, SyncRateLimited
+from aurival.errors import AurivalError, RateLimited, SyncRateLimited
 from aurival.events import Event
 
 
@@ -597,3 +597,58 @@ async def test_start_does_not_warn_when_commands_are_registered(
     await bot.start()
 
     assert "no commands registered" not in stream.getvalue()
+
+
+# --- command count cap (Lane 58 S2): a local pre-flight, before any network call --
+
+
+async def test_run_raises_locally_past_fifty_registered_commands() -> None:
+    bot = Bot()
+    for i in range(51):
+
+        @bot.command(f"cmd{i}")
+        async def handler(ctx: Any) -> None: ...
+
+    with pytest.raises(AurivalError, match=r"51 commands registered, but the cap is 50"):
+        await bot.start()
+
+
+async def test_start_does_not_raise_at_exactly_fifty_registered_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = _StubHttp()
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    class _KeyFile:
+        def __init__(self, path: object = None) -> None: ...
+
+        def load(self) -> tuple[object, object]:
+            return (object(), type("M", (), {"bot": "bot_1"})())
+
+        def save(self, *a: object) -> None: ...
+
+    class _Socket:
+        def __init__(self, *a: object, **kw: object) -> None: ...
+
+        async def run(self, stop: asyncio.Event) -> None:
+            return None
+
+    monkeypatch.setattr(bot_module.aiohttp, "ClientSession", lambda *a, **k: _Session())
+    monkeypatch.setattr(bot_module, "KeyFile", _KeyFile)
+    monkeypatch.setattr(bot_module, "Auth", lambda *a, **k: object())
+    monkeypatch.setattr(bot_module, "HttpClient", lambda *a, **k: http)
+    monkeypatch.setattr(bot_module, "Socket", _Socket)
+    monkeypatch.setattr(bot_module, "resolve_host", lambda: bot_module.DEFAULT_HOST)
+
+    bot = Bot()
+    for i in range(50):
+
+        @bot.command(f"cmd{i}")
+        async def handler(ctx: Any) -> None: ...
+
+    await bot.start()

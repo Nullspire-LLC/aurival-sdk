@@ -29,6 +29,12 @@ from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
 from .status import StatusReporter
 
+# ERRORS-V1 has nothing to do with this cap — it never reaches the server. A
+# sync past this size is refused server-side too (SyncCommands, backend-go),
+# but catching it here means a bot author sees this line instead of a 400
+# deep inside a sync call, and before we have made any network call at all.
+MAX_COMMANDS = 50
+
 Handler = Callable[[Context], Awaitable[None]]
 # The hook also receives a `backlog.overflowed` Event, which is operational
 # rather than an exception — it never reaches a handler (SDK-28).
@@ -117,6 +123,11 @@ class Bot:
             sys.exit(1)
 
     async def start(self) -> None:
+        if len(self._registered) > MAX_COMMANDS:
+            raise AurivalError(
+                f"{len(self._registered)} commands registered, but the cap is "
+                f"{MAX_COMMANDS} per bot"
+            )
         host = self._host or resolve_host()
         if host != DEFAULT_HOST:
             # Printed, not logged: a redirected host is the first thing to check

@@ -743,6 +743,59 @@ def test_s12_a_handler_slower_than_redelivery_still_answers_once(
     assert bot.proc.poll() is None
 
 
+# --- S13: more than fifty commands is refused before connect ---------------
+
+
+TOO_MANY_COMMANDS_BOT = """
+import logging
+from aurival import Bot
+
+logging.basicConfig(level=logging.DEBUG)
+bot = Bot()
+
+for i in range(51):
+    def _make(i):
+        async def handler(ctx):
+            await ctx.reply("pong")
+        return handler
+
+    bot.command(f"cmd{i}", "one of too many")(_make(i))
+
+bot.run()
+"""
+
+
+def test_s13_more_than_fifty_commands_is_refused_before_connect(
+    testbed_factory: Callable[..., Testbed], run_bot: Callable[..., BotProcess]
+) -> None:
+    """`MAX_COMMANDS` is 50 (`bot.py:36`), and `start()` checks the count before
+    it ever resolves a host or opens a socket (`bot.py:125-129`).
+
+    That ordering is the whole point: a developer who registers 51 commands
+    must be told at import/startup time, in a message that names the count and
+    the cap, and never get as far as a pairing code. Without this check the
+    overshoot would only surface later as a silent half-registration — some
+    slice of the developer's commands simply missing after pairing, with no
+    error anywhere to explain why. This proves the fast, loud failure instead:
+    no code printed, the process exits, and the cap message is in hand.
+    """
+    bed = testbed_factory()
+    bot = run_bot(bed, TOO_MANY_COMMANDS_BOT)
+
+    for _ in range(300):
+        if bot.proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError(f"the bot never exited:\n{bot.transcript()}")
+
+    assert bot.proc.poll() != 0, f"51 commands did not fail the cap:\n{bot.transcript()}"
+    assert not CODE_RE.search(bot.transcript()), (
+        f"a pairing code was printed despite the cap being exceeded:\n{bot.transcript()}"
+    )
+    assert "commands registered, but the cap is 50 per bot" in bot.transcript(), bot.transcript()
+
+
 def test_a_bot_gets_events_with_no_allowlist_anywhere_in_the_environment(
     testbed_factory: Callable[..., Testbed], run_bot: Callable[..., BotProcess]
 ) -> None:

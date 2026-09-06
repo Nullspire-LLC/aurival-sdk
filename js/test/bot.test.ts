@@ -317,3 +317,42 @@ describe('Bot#start with zero registered commands', () => {
     }
   });
 });
+
+describe('Bot#start command count cap (Lane 58 S2)', () => {
+  it('throws locally, before any network call, past fifty registered commands', async () => {
+    const bot = new Bot({ quiet: true });
+    for (let i = 0; i < 51; i++) {
+      bot.command(`cmd${i}`, async () => undefined);
+    }
+
+    await expect(bot.start()).rejects.toThrow(
+      '51 commands registered, but the cap is 50 per bot',
+    );
+  });
+
+  it('does not throw at exactly fifty registered commands', async () => {
+    const api = await startFakeBotAPI();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: api.url,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+
+    try {
+      const bot = new Bot({ host: api.url, keyPath, quiet: true });
+      for (let i = 0; i < 50; i++) {
+        bot.command(`cmd${i}`, async () => undefined);
+      }
+      const controller = new AbortController();
+      controller.abort();
+      await expect(bot.start(controller.signal)).resolves.toBeUndefined();
+    } finally {
+      await api.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

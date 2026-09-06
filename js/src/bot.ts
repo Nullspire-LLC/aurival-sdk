@@ -22,6 +22,12 @@ export type ErrorHook = (error: Reportable, ctx: Context | null) => Promise<void
 /** How long a clean shutdown waits for handlers that are still running (SDK-32). */
 export const SHUTDOWN_GRACE_MS = 10_000;
 
+// ERRORS-V1 has nothing to do with this cap — it never reaches the server. A
+// sync past this size is refused server-side too (SyncCommands, backend-go),
+// but catching it here means a bot author sees this line instead of a 400
+// deep inside a sync call, and before we have made any network call at all.
+export const MAX_COMMANDS = 50;
+
 export interface BotOptions {
   host?: string | undefined;
   keyPath?: string | undefined;
@@ -184,6 +190,11 @@ export class Bot {
   }
 
   async start(signal?: AbortSignal): Promise<void> {
+    if (this.#registered.size > MAX_COMMANDS) {
+      throw new AurivalError(
+        `${this.#registered.size} commands registered, but the cap is ${MAX_COMMANDS} per bot`,
+      );
+    }
     const host = this.#host ?? resolveHost();
     if (host !== DEFAULT_HOST) {
       // Printed, not logged: a redirected host is the first thing to check when

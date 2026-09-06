@@ -101,6 +101,8 @@ command handler.
 
 ## Shadowed commands
 
+A bot can declare up to 50 commands, the SDK refuses to connect past that.
+
 Every `run()` syncs your command list, and the server answers with the chats where another
 bot already holds one of your names. Yours never fires there. The SDK prints one warning
 line per shadowed chat:

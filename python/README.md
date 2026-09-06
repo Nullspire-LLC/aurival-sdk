@@ -22,6 +22,8 @@ bot.run()
 
 Python 3.10+.
 
+A bot can declare up to 50 commands, the SDK refuses to connect past that.
+
 ## Getting started
 
 ```bash
