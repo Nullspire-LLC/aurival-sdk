@@ -62,6 +62,62 @@ if (REASON !== null) {
   process.stderr.write(`\nSKIPPING THE SDK END-TO-END SUITE: ${REASON}\n`);
 }
 
+// Loader/toolchain variables a parent environment may need to hand a spawned
+// `process.execPath` child so the interpreter can start (mirrors the python
+// suite's `bot_env` passthrough, hardened after CI-2026-09 broke on
+// `actions/setup-python`'s shared-library build). None of these carry an
+// event-allowlist or app secret, so passing them through does not reopen
+// BA-R28/S14 — the base env stays a deliberately minimal, explicit object,
+// never a copy of `process.env`.
+const ENV_PASSTHROUGH = ['LD_LIBRARY_PATH'] as const;
+
+function botEnv(base: Record<string, string>): Record<string, string> {
+  const env = { ...base };
+  for (const name of ENV_PASSTHROUGH) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
+describe('botEnv', () => {
+  const base = { PATH: '/usr/bin:/bin', HOME: '/tmp/x', AURIVAL_API: 'http://127.0.0.1:0' };
+
+  it('passes the loader path through when the parent has it', () => {
+    const prior = process.env['LD_LIBRARY_PATH'];
+    process.env['LD_LIBRARY_PATH'] = '/opt/tool-cache/node/x64/lib';
+    try {
+      expect(botEnv(base)['LD_LIBRARY_PATH']).toBe('/opt/tool-cache/node/x64/lib');
+    } finally {
+      if (prior === undefined) delete process.env['LD_LIBRARY_PATH'];
+      else process.env['LD_LIBRARY_PATH'] = prior;
+    }
+  });
+
+  it('omits the loader path when the parent has none', () => {
+    const prior = process.env['LD_LIBRARY_PATH'];
+    delete process.env['LD_LIBRARY_PATH'];
+    try {
+      expect('LD_LIBRARY_PATH' in botEnv(base)).toBe(false);
+    } finally {
+      if (prior !== undefined) process.env['LD_LIBRARY_PATH'] = prior;
+    }
+  });
+
+  it('never leaks an event allowlist or app secret through the passthrough', () => {
+    const prior = process.env['BOT_EVENT_CONVERSATIONS'];
+    process.env['BOT_EVENT_CONVERSATIONS'] = 'chat_should_never_cross';
+    try {
+      const env = botEnv(base);
+      expect('BOT_EVENT_CONVERSATIONS' in env).toBe(false);
+      expect(env['AURIVAL_API']).toBe(base.AURIVAL_API);
+    } finally {
+      if (prior === undefined) delete process.env['BOT_EVENT_CONVERSATIONS'];
+      else process.env['BOT_EVENT_CONVERSATIONS'] = prior;
+    }
+  });
+});
+
 interface Handshake {
   host: string;
   owner: string;
@@ -194,11 +250,11 @@ describe.skipIf(REASON !== null)('a real bot, through the real service', () => {
     fs.writeFileSync(script, BOT_SOURCE(dist));
     const proc = spawn(process.execPath, [script], {
       cwd: dir,
-      env: {
+      env: botEnv({
         PATH: process.env['PATH'] ?? '/usr/bin:/bin',
         HOME: dir,
         AURIVAL_API: handshake.host,
-      },
+      }),
     }) as ChildProcessWithoutNullStreams;
     bots.push(proc);
     return new Transcript(proc);
@@ -277,11 +333,11 @@ describe.skipIf(REASON !== null)('a real bot, through the real service', () => {
     const dir = path.join(workdir, 'init1');
     fs.mkdirSync(dir, { recursive: true });
     const cli = path.join(SDK, 'dist', 'cli.js');
-    const env = {
+    const env = botEnv({
       PATH: process.env['PATH'] ?? '/usr/bin:/bin',
       HOME: dir,
       AURIVAL_API: handshake.host,
-    };
+    });
 
     const proc = spawn(process.execPath, [cli, 'init'], {
       cwd: dir,

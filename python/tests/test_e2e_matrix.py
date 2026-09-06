@@ -27,6 +27,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +134,39 @@ class BotProcess:
                 self.proc.kill()
 
 
+# Loader/toolchain variables a parent environment may need to hand its child
+# interpreter so the interpreter can even START. `actions/setup-python`'s
+# tool-cache CPython is built `--enable-shared`, so it needs `LD_LIBRARY_PATH`
+# to find its own `libpython3.NN.so` — a system python (static, no such
+# dependency) never surfaces the gap locally. None of these carry an
+# event-allowlist or app secret, so passing them through does not reopen
+# BA-R28/S14 (test_a_bot_gets_events_with_no_allowlist_anywhere_in_the_environment
+# above): the scrub of `AURIVAL_*`/`BOT_*` parent state stays exactly as it was.
+BOT_ENV_PASSTHROUGH = ("LD_LIBRARY_PATH",)
+
+
+def bot_env(bed: Testbed, directory: Path) -> dict[str, str]:
+    """The environment a spawned bot process gets.
+
+    Built from a deliberately minimal, explicit base — never a copy of the
+    parent environment — so no `AURIVAL_*`/`BOT_*` secret or allowlist var
+    the test process happens to carry can reach the child. The only parent
+    state that crosses is the small loader passthrough above, and only when
+    the parent actually has it set.
+    """
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(directory),
+        "AURIVAL_API": bed.host,
+        "PYTHONPATH": str(SDK),
+        "PYTHONUNBUFFERED": "1",
+    }
+    for name in BOT_ENV_PASSTHROUGH:
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
+
+
 @pytest.fixture
 def run_bot(tmp_path: Path) -> Callable[..., BotProcess]:
     """Start a bot process in its own directory, torn down at the end."""
@@ -146,13 +180,7 @@ def run_bot(tmp_path: Path) -> Callable[..., BotProcess]:
         proc = subprocess.Popen(
             [sys.executable, str(script)],
             cwd=directory,
-            env={
-                "PATH": "/usr/bin:/bin",
-                "HOME": str(directory),
-                "AURIVAL_API": bed.host,
-                "PYTHONPATH": str(SDK),
-                "PYTHONUNBUFFERED": "1",
-            },
+            env=bot_env(bed, directory),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -165,6 +193,43 @@ def run_bot(tmp_path: Path) -> Callable[..., BotProcess]:
     yield start
     for bot in started:
         bot.stop()
+
+
+def test_bot_env_passes_through_the_loader_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CI-2026-09: every python e2e bot died with exit code 127, `libpython3.10.so.1.0`
+    not found. `actions/setup-python`'s tool-cache interpreter is `--enable-shared`
+    and relies on `LD_LIBRARY_PATH`, which the old hand-built env dict dropped —
+    invisible locally where the system python is static. This is the RED that
+    fix pins: the loader variable must reach the child when the parent has it.
+    """
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/tool-cache/python/3.10.21/x64/lib")
+    bed = SimpleNamespace(host="http://127.0.0.1:0")
+    env = bot_env(bed, tmp_path)
+    assert env["LD_LIBRARY_PATH"] == "/opt/tool-cache/python/3.10.21/x64/lib"
+
+
+def test_bot_env_omits_the_loader_path_when_the_parent_has_none(tmp_path: Path) -> None:
+    """The passthrough is conditional, not a blanket copy of the parent
+    environment — no `LD_LIBRARY_PATH` key should appear from nowhere."""
+    bed = SimpleNamespace(host="http://127.0.0.1:0")
+    env = bot_env(bed, tmp_path)
+    assert "LD_LIBRARY_PATH" not in env
+
+
+def test_bot_env_never_leaks_an_event_allowlist_or_app_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """BA-R28/S14 must hold through this change: the passthrough is a named
+    allowlist, not a door for `AURIVAL_*`/`BOT_*` parent state to cross."""
+    monkeypatch.setenv("BOT_EVENT_CONVERSATIONS", "chat_should_never_cross")
+    monkeypatch.setenv("AURIVAL_TESTBED_SIGNING_KEY", "should-never-cross")
+    bed = SimpleNamespace(host="http://127.0.0.1:0")
+    env = bot_env(bed, tmp_path)
+    assert "BOT_EVENT_CONVERSATIONS" not in env
+    assert "AURIVAL_TESTBED_SIGNING_KEY" not in env
+    assert env["AURIVAL_API"] == bed.host
 
 
 def pair_and_approve(bed: Testbed, bot: BotProcess) -> None:
