@@ -311,28 +311,38 @@ describe('bye log level', () => {
 // --------------------------------------------------------------------------
 
 describe('rotation flag does not leak across connections', () => {
-  it('a stale rotation refresh resolving during a LATER connection must not mask that connection\'s real fault', async () => {
+  it("a stale rotation refresh resolving during a LATER connection must not mask that connection's real fault", async () => {
+    // Every ordering point below is driven by an explicit signal the test
+    // controls — never a guessed wall-clock delay — so this cannot flake
+    // under CPU contention (a real 250ms/320ms-margin version of this test
+    // WAS observed to flake under load: the held refresh could fail to
+    // start before the scripted close it was racing).
+    let sendIdx0Bye!: () => void;
+    const idx0ByeGate = new Promise<void>((resolve) => {
+      sendIdx0Bye = resolve;
+    });
+    let closeIdx1!: () => void;
+    const idx1CloseGate = new Promise<void>((resolve) => {
+      closeIdx1 = resolve;
+    });
+
     const gateway = await startGateway(async (conn, idx) => {
       if (idx === 0) {
         sendHello(conn, 20);
-        // Wait past the rotation deadline (~120ms — see expiresAtMs below,
-        // comfortably above the test's own 50ms minRotationIntervalMs floor)
-        // so the timer has already fired and called refresh(), which the
-        // test is holding open, BEFORE this bye is sent. The connection is
-        // still fully open (its own close never happened — refresh() hasn't
-        // resolved), so the bye is received normally and ends this
-        // connection first.
-        await new Promise((resolve) => setTimeout(resolve, 320));
+        // The rotation timer (armed against the short TTL below) fires and
+        // enters refresh() at some point while we sit here — the test
+        // observes that via `rotationStarted`, not a sleep, before it lets
+        // this bye through.
+        await idx0ByeGate;
         conn.send(byeFrame('server_restarting', 'api_error'));
         return;
       }
       if (idx === 1) {
         sendHello(conn, 20);
-        // Give the test time to release the held refresh WHILE this
-        // connection is live, then this connection ends with a genuine
-        // network fault (bare close, no bye).
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        conn.close();
+        // The test releases this once it has confirmed the stale refresh
+        // from idx0 has actually completed.
+        await idx1CloseGate;
+        conn.close(); // bare close, no bye -> a genuine network fault
         return;
       }
       sendHello(conn, 20);
@@ -345,11 +355,11 @@ describe('rotation flag does not leak across connections', () => {
       });
       try {
         const auth = new FakeAuth();
-        // Rotation fires ~130ms into idx0 (well before idx0's bye, which the
-        // gateway sends as soon as it connects — the timer still gets armed
-        // and its refresh() call started before that bye is processed).
-        auth.setExpiresAtMs(Date.now() + TOKEN_REFRESH_HEADROOM_MS + 130);
-        const release = auth.holdNextRefresh();
+        // Short TTL so idx0's rotation timer fires quickly (`hello` reads
+        // this once, at arming time — a later change to `expiresAtMs` never
+        // retroactively affects an already-armed timer).
+        auth.setExpiresAtMs(Date.now() + TOKEN_REFRESH_HEADROOM_MS + 200);
+        const { started: rotationStarted, release: releaseRotation } = auth.holdNextRefresh();
         const http = new FakeHttpClient(gateway.url);
         // A distinctive backoff makes a real sleepBackoff visually obvious
         // against an "immediate, no backoff" reconnect (a masked fault's gap
@@ -363,31 +373,38 @@ describe('rotation flag does not leak across connections', () => {
         });
         const controller = new AbortController();
         const task = runUntilStopped(socket, controller.signal);
-        // idx0's rotation timer was already armed (at hello time) against
-        // the short TTL above. Bump `expiresAtMs` to something far in the
-        // future shortly after — well before idx1 connects, but after idx0's
-        // deadline was captured — so idx1's OWN `hello` computes a deadline
-        // far away and never arms a rotation of its own. Without this, idx1
-        // would independently want to rotate too, confounding the assertion
-        // below (which is specifically about idx0's STALE refresh, not a
-        // fresh one idx1 legitimately triggered).
-        setTimeout(() => auth.setExpiresAtMs(Date.now() + 10 * TOKEN_REFRESH_HEADROOM_MS), 200);
         try {
-          // idx0 ends via the bye (SHORT_WAIT_RECONNECT) long before the
-          // held refresh() ever resolves, so idx0's rotation never actually
-          // fires its own close.
+          // Wait for the ACTUAL event: idx0's rotation timer fired and
+          // entered refresh() (now blocked on the held gate). Only now do we
+          // let the gateway send idx0's bye — guaranteed ordering, no race.
+          await rotationStarted;
+
+          // idx1 must not independently arm its OWN rotation (it would
+          // confound the assertion below, which is specifically about
+          // idx0's STALE refresh). Bump `expiresAtMs` far into the future
+          // now — deterministically before idx0's bye is even sent, so
+          // strictly before idx1 can possibly connect and read it at its own
+          // `hello`.
+          auth.setExpiresAtMs(Date.now() + 10 * TOKEN_REFRESH_HEADROOM_MS);
+
+          // NOW let idx0 end via the bye (SHORT_WAIT_RECONNECT) — its
+          // rotation's own close never happens, because refresh() is still
+          // held.
+          sendIdx0Bye();
           const reachedIdx1 = await waitUntil(() => gateway.state.connectCount >= 2, 3000);
           expect(reachedIdx1, 'never reached the second connection').toBe(true);
 
-          // NOW, while idx1 is live, let idx0's stale refresh() resolve.
-          // Before the generation guard, this would set `#rotating = true`
-          // on the Socket instance while idx1 owns it.
-          release();
+          // While idx1 is live, let idx0's stale refresh() resolve. Before
+          // the generation guard, this would set `#rotating = true` on the
+          // Socket instance while idx1 owns it.
+          releaseRotation();
           // Wait for the STALE refresh to actually COMPLETE (refreshCalls
           // increments the instant refresh() is entered, before the held
           // gate resolves — refreshCompletedAt only grows once it finishes).
           await waitUntil(() => auth.refreshCompletedAt.length >= 1, 2000);
 
+          // Only now let idx1 end with a genuine network fault.
+          closeIdx1();
           const reachedIdx2 = await waitUntil(() => gateway.state.connectCount >= 3, 4000);
           expect(reachedIdx2, `only ${gateway.state.connectCount} connections, want 3`).toBe(
             true,

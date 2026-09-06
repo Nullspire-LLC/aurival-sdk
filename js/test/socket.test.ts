@@ -67,12 +67,25 @@ export class FakeAuth {
    * refresh is still in flight when the connection that started it has
    * already moved on (SDK bot-api-curation: a stale rotation must not
    * pollute a LATER connection once its own refresh finally resolves). */
-  holdNextRefresh(): () => void {
+  #onRefreshEntered: (() => void) | null = null;
+
+  /** Makes the NEXT `refresh()` call hang until `release()` is invoked, and
+   * resolves `started` the INSTANT that call is actually entered (before it
+   * starts waiting on the gate) — lets a test await the real event instead
+   * of guessing a wall-clock delay for it. Used to deterministically
+   * reproduce a rotation whose refresh is still in flight when the
+   * connection that started it has already moved on (SDK
+   * bot-api-curation: a stale rotation must not pollute a LATER connection
+   * once its own refresh finally resolves). */
+  holdNextRefresh(): { started: Promise<void>; release: () => void } {
     let release!: () => void;
     this.#refreshGate = new Promise((resolve) => {
       release = resolve;
     });
-    return release;
+    const started = new Promise<void>((resolve) => {
+      this.#onRefreshEntered = resolve;
+    });
+    return { started, release };
   }
 
   async token(): Promise<string> {
@@ -87,6 +100,8 @@ export class FakeAuth {
     if (this.#refreshGate) {
       const gate = this.#refreshGate;
       this.#refreshGate = null; // only the one held call waits
+      this.#onRefreshEntered?.();
+      this.#onRefreshEntered = null;
       await gate;
     }
     const err = this.#refreshErrors.shift();
