@@ -36,6 +36,15 @@ class Command:
 
 
 @dataclasses.dataclass(frozen=True)
+class Message:
+    id: str
+    text: str
+    sent_at: str
+    sender: User | None
+    reply_to: str | None
+
+
+@dataclasses.dataclass(frozen=True)
 class Event:
     id: str
     type: str
@@ -72,6 +81,18 @@ def _chat_from_wire(d: dict) -> Chat:
     )
 
 
+def _message_from_wire(d: dict) -> Message:
+    reply_to = d.get("reply_to")
+    sender = d.get("sender")
+    return Message(
+        id=str(d.get("id", "")),
+        text=str(d.get("text", "")),
+        sent_at=str(d.get("sent_at", "")),
+        sender=_user_from_wire(sender) if isinstance(sender, dict) else None,
+        reply_to=reply_to if isinstance(reply_to, str) else None,
+    )
+
+
 class Context:
     """What a command handler receives. Built by `bot.py`'s dispatch closure
     from one `Event` — `Socket` never constructs one."""
@@ -84,7 +105,7 @@ class Context:
         chat: Chat,
         sender: User,
         event: Event,
-        message: str | None,
+        message: Message | None,
         http: HttpClient,
     ) -> None:
         self.command = command
@@ -107,10 +128,17 @@ class Context:
                 data.get("sender") if isinstance(data.get("sender"), dict) else {}
             ),
             event=event,
-            # `.get` so an absent field is None, not a crash. This is the id
-            # `reply()` quotes (BA-R27); botview.go:245 sends it as a wire
-            # `msg_…` reference and `POST /v1/messages` takes the same form.
-            message=data.get("message") if isinstance(data.get("message"), str) else None,
+            # BA-R42: the invoking message travels with the event as a full
+            # object under `invoking_message`. Prefer that. But `message`
+            # (the bare id string) is UNCHANGED wire compatibility — an old
+            # server that has not deployed BA-R42 yet sends only that string,
+            # so we fall back to an id-only Message rather than None, keeping
+            # a new SDK working against an old server.
+            message=_message_from_wire(data["invoking_message"])
+            if isinstance(data.get("invoking_message"), dict)
+            else Message(id=data["message"], text="", sent_at="", sender=None, reply_to=None)
+            if isinstance(data.get("message"), str)
+            else None,
             http=http,
         )
 
@@ -128,8 +156,8 @@ class Context:
         # an explicit null — with the same `not_found` an unresolvable id gets
         # (server.go:943-953). So an event with no message id must send no key,
         # not an empty one, or every reply to it fails as a missing message.
-        if self.message:
-            body["reply_to"] = self.message
+        if self.message is not None and self.message.id:
+            body["reply_to"] = self.message.id
         return await self._http.request(
             "POST",
             "/v1/messages",

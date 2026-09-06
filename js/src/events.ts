@@ -26,6 +26,14 @@ export interface Command {
   description: string;
 }
 
+export interface Message {
+  id: string;
+  text: string;
+  sent_at: string;
+  sender: User | null;
+  reply_to: string | null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -88,13 +96,25 @@ function chatFromWire(d: Record<string, unknown>): Chat {
   };
 }
 
+function messageFromWire(d: Record<string, unknown>): Message {
+  const replyTo = d['reply_to'];
+  const sender = asRecord(d['sender']);
+  return {
+    id: asString(d['id']),
+    text: asString(d['text']),
+    sent_at: asString(d['sent_at']),
+    sender: sender ? userFromWire(sender) : null,
+    reply_to: typeof replyTo === 'string' ? replyTo : null,
+  };
+}
+
 export interface ContextInit {
   command: string;
   arguments: string;
   chat: Chat;
   sender: User;
   event: Event;
-  message: string | null;
+  message: Message | null;
   http: HttpClient;
 }
 
@@ -108,7 +128,7 @@ export class Context {
   readonly chat: Chat;
   readonly sender: User;
   readonly event: Event;
-  readonly message: string | null;
+  readonly message: Message | null;
   readonly #http: HttpClient;
 
   constructor(init: ContextInit) {
@@ -124,17 +144,29 @@ export class Context {
   /** Build straight from a `command.invoked` event's raw `data`. */
   static fromEvent(event: Event, http: HttpClient): Context {
     const data = event.data;
+    const invokingMessage = asRecord(data['invoking_message']);
     const message = data['message'];
+    let resolvedMessage: Message | null;
+    if (invokingMessage) {
+      // BA-R42: the invoking message travels with the event as a full object
+      // under `invoking_message`. Prefer that.
+      resolvedMessage = messageFromWire(invokingMessage);
+    } else if (typeof message === 'string') {
+      // `message` (the bare id string) is UNCHANGED wire compatibility — an
+      // old server that has not deployed BA-R42 yet sends only that string,
+      // so we fall back to an id-only Message rather than null, keeping a
+      // new SDK working against an old server.
+      resolvedMessage = { id: message, text: '', sent_at: '', sender: null, reply_to: null };
+    } else {
+      resolvedMessage = null;
+    }
     return new Context({
       command: asString(data['command']),
       arguments: asString(data['arguments']),
       chat: chatFromWire(asRecord(data['chat']) ?? {}),
       sender: userFromWire(asRecord(data['sender']) ?? {}),
       event,
-      // The `msg_` id of the message the bot was addressed with
-      // (botview.go's CommandInvokedData.Message). `reply` quotes it (BA-R27).
-      // An absent field is null, not a crash — then the reply floats free.
-      message: typeof message === 'string' ? message : null,
+      message: resolvedMessage,
       http,
     });
   }
@@ -148,6 +180,6 @@ export class Context {
    * `HttpClient.request` itself.
    */
   async reply(text: string): Promise<Record<string, unknown>> {
-    return this.#http.sendMessage(this.chat.id, text, randomUUID(), this.message);
+    return this.#http.sendMessage(this.chat.id, text, randomUUID(), this.message?.id ?? null);
   }
 }

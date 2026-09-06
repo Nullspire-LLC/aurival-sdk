@@ -19,7 +19,9 @@ from aurival.errors import KeyRevoked, RateLimited
 from aurival.events import Context, Event
 
 
-def _event(*, message: str | None = "msg_1") -> Event:
+def _event(
+    *, message: str | None = "msg_1", invoking_message: dict[str, object] | None = None
+) -> Event:
     data: dict[str, object] = {
         "command": "ping",
         "arguments": "",
@@ -28,6 +30,8 @@ def _event(*, message: str | None = "msg_1") -> Event:
     }
     if message is not None:
         data["message"] = message
+    if invoking_message is not None:
+        data["invoking_message"] = invoking_message
     return Event(
         id="evt_1", type="command.invoked", created_at="2026-09-05T00:00:00Z", sequence=1, data=data
     )
@@ -63,6 +67,32 @@ async def test_reply_quotes_the_invoking_message() -> None:
     assert body["text"] == "pong"
 
 
+async def test_reply_quotes_the_invoking_message_id_from_a_full_invoking_message_payload() -> None:
+    """`reply()` sends `reply_to` = the invoking message's `.id` even when
+    `ctx.message` was built from a full `invoking_message` object rather than
+    the bare id fallback (BA-R42)."""
+    http = _RecordingHttp()
+    ctx = Context.from_event(
+        _event(
+            message="msg_the_invocation",
+            invoking_message={
+                "object": "message",
+                "id": "msg_the_invocation",
+                "text": "/ping",
+                "sent_at": "2026-09-05T00:00:00Z",
+                "sender": {"object": "user", "id": "usr_1", "handle": "gustav", "name": "Gustav"},
+                "reply_to": None,
+            },
+        ),
+        http=http,  # type: ignore[arg-type]
+    )
+
+    await ctx.reply("pong")
+
+    body = http.sent[0]["body"]
+    assert body["reply_to"] == "msg_the_invocation"
+
+
 async def test_reply_omits_reply_to_entirely_when_the_event_carried_no_message() -> None:
     """THE KEY IS ABSENT, NOT null.
 
@@ -82,6 +112,77 @@ async def test_reply_omits_reply_to_entirely_when_the_event_carried_no_message()
         f"reply_to is present as {body.get('reply_to')!r} with no message id to quote. The "
         "server 404s a reply_to it cannot decode, null included, so the key must be omitted"
     )
+
+
+
+# --- BA-R42: ctx.message is a full Message object, not a bare id ------------
+
+
+async def test_ctx_message_maps_a_full_invoking_message_payload() -> None:
+    """A full `invoking_message` object on the wire yields a `Message` whose
+    fields (including a non-null `reply_to`) equal the wire values, and whose
+    `.id` equals the `msg_…` id (BA-R42)."""
+    http = _RecordingHttp()
+    ctx = Context.from_event(
+        _event(
+            message="msg_the_invocation",
+            invoking_message={
+                "object": "message",
+                "id": "msg_the_invocation",
+                "text": "/echo hello there",
+                "sent_at": "2026-09-05T00:00:00Z",
+                "sender": {"object": "user", "id": "usr_1", "handle": "gustav", "name": "Gustav"},
+                "reply_to": "msg_earlier",
+            },
+        ),
+        http=http,  # type: ignore[arg-type]
+    )
+
+    assert ctx.message is not None
+    assert ctx.message.id == "msg_the_invocation"
+    assert ctx.message.text == "/echo hello there"
+    assert ctx.message.sent_at == "2026-09-05T00:00:00Z"
+    assert ctx.message.sender is not None
+    assert ctx.message.sender.handle == "gustav"
+    assert ctx.message.reply_to == "msg_earlier"
+
+
+async def test_ctx_message_reply_to_null_on_the_wire_stays_none() -> None:
+    """`reply_to: null` on the wire yields `ctx.message.reply_to is None`
+    (BA-R42) — not the string `"null"`, not omitted-and-crashing."""
+    http = _RecordingHttp()
+    ctx = Context.from_event(
+        _event(
+            message="msg_the_invocation",
+            invoking_message={
+                "object": "message",
+                "id": "msg_the_invocation",
+                "text": "/ping",
+                "sent_at": "2026-09-05T00:00:00Z",
+                "sender": {"object": "user", "id": "usr_1", "handle": "gustav", "name": "Gustav"},
+                "reply_to": None,
+            },
+        ),
+        http=http,  # type: ignore[arg-type]
+    )
+
+    assert ctx.message is not None
+    assert ctx.message.reply_to is None
+
+
+async def test_ctx_message_id_only_fallback_when_no_invoking_message() -> None:
+    """An old server that has not deployed BA-R42 sends only the bare
+    `message` id string, with no `invoking_message` object. `Context.from_event`
+    must still produce a `Message` — `.id` is that string, `.text` is `""`
+    (never `None`, never a crash)."""
+    http = _RecordingHttp()
+    ctx = Context.from_event(
+        _event(message="msg_old_server", invoking_message=None), http=http  # type: ignore[arg-type]
+    )
+
+    assert ctx.message is not None
+    assert ctx.message.id == "msg_old_server"
+    assert ctx.message.text == ""
 
 
 async def test_reply_still_carries_an_idempotency_key() -> None:

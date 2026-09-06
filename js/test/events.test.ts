@@ -163,7 +163,7 @@ describe('Context.fromEvent', () => {
     expect(ctx.event).toBe(event);
   });
 
-  it('carries message, the `msg_` id of the invocation (BA-R27 depends on it)', () => {
+  it('carries message, the `msg_` id of the invocation (BA-R27 depends on it) as an id-only Message when there is no invoking_message (BA-R42: old-server fallback)', () => {
     const event = makeInvokedEvent({
       command: 'ping',
       arguments: '',
@@ -172,7 +172,11 @@ describe('Context.fromEvent', () => {
       message: 'msg_the_invocation',
     });
     const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
-    expect(ctx.message).toBe('msg_the_invocation');
+    expect(ctx.message?.id).toBe('msg_the_invocation');
+    expect(ctx.message?.text).toBe('');
+    expect(ctx.message?.sent_at).toBe('');
+    expect(ctx.message?.sender).toBeNull();
+    expect(ctx.message?.reply_to).toBeNull();
   });
 
   it('message is null when absent', () => {
@@ -196,6 +200,65 @@ describe('Context.fromEvent', () => {
     });
     const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
     expect(ctx.message).toBeNull();
+  });
+});
+
+describe('Context.fromEvent > invoking_message (BA-R42)', () => {
+  it('a full invoking_message payload maps every field, including a non-null reply_to', () => {
+    const event = makeInvokedEvent({
+      command: 'echo',
+      arguments: 'hello there',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      message: 'msg_the_invocation',
+      invoking_message: {
+        object: 'message',
+        id: 'msg_the_invocation',
+        text: '/echo hello there',
+        sent_at: '2026-09-05T00:00:00Z',
+        sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+        reply_to: 'msg_earlier',
+      },
+    });
+    const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
+    expect(ctx.message?.id).toBe('msg_the_invocation');
+    expect(ctx.message?.text).toBe('/echo hello there');
+    expect(ctx.message?.sent_at).toBe('2026-09-05T00:00:00Z');
+    expect(ctx.message?.sender).toEqual({ id: 'user_1', handle: 'gustav', name: 'Gustav' });
+    expect(ctx.message?.reply_to).toBe('msg_earlier');
+  });
+
+  it('a null reply_to on the wire yields ctx.message.reply_to of null', () => {
+    const event = makeInvokedEvent({
+      command: 'echo',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      message: 'msg_the_invocation',
+      invoking_message: {
+        object: 'message',
+        id: 'msg_the_invocation',
+        text: '/echo',
+        sent_at: '2026-09-05T00:00:00Z',
+        sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+        reply_to: null,
+      },
+    });
+    const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
+    expect(ctx.message?.reply_to).toBeNull();
+  });
+
+  it('id-only fallback: message present but no invoking_message yields a Message whose text is "" not undefined/crash (old server, BA-R42 compat)', () => {
+    const event = makeInvokedEvent({
+      command: 'echo',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      message: 'msg_old_server',
+    });
+    const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
+    expect(ctx.message?.id).toBe('msg_old_server');
+    expect(ctx.message?.text).toBe('');
   });
 });
 
@@ -256,6 +319,41 @@ describe('Context.reply', () => {
     // would be a parameter_invalid we never need to risk.
     expect(req.body).toEqual({ chat: 'chat_1', text: 'hello there' });
     expect(Object.keys(req.body as object)).not.toContain('reply_to');
+  });
+
+  it('reply() sends reply_to = the invoking message id from a full invoking_message payload (BA-R42)', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    openServers.push(server);
+
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const event = makeInvokedEvent({
+      command: 'echo',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      message: 'msg_the_invocation',
+      invoking_message: {
+        object: 'message',
+        id: 'msg_the_invocation',
+        text: '/echo',
+        sent_at: '2026-09-05T00:00:00Z',
+        sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+        reply_to: null,
+      },
+    });
+    const ctx = Context.fromEvent(event, http);
+
+    await ctx.reply('hello there');
+    const req = requests[0];
+    if (req === undefined) throw new Error('expected one captured request');
+    expect(req.body).toEqual({
+      chat: 'chat_1',
+      text: 'hello there',
+      reply_to: 'msg_the_invocation',
+    });
   });
 
   it('uses a different Idempotency-Key on two separate reply() calls', async () => {

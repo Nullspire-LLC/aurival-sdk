@@ -76,14 +76,12 @@ bot.command('say', async (ctx) => {
   ctx.arguments; // the raw rest of the line, unparsed, possibly ""
   ctx.chat; // { id, type, name }
   ctx.sender; // { id, handle, name }
-  ctx.message; // the id of the message that invoked you, or null
+  ctx.message.text; // "/say hi" — the invoking message, verbatim
   await ctx.reply('…');
 });
 ```
 
-`ctx.reply()` quotes the message that invoked the command, so an answer never floats free
-in a busy chat. There is no flag: on the rare event that carries no message id it sends a
-plain message instead.
+`ctx.message` is now the invoking message itself: `ctx.message.id`, `.text`, `.sent_at`, `.sender`, and `.reply_to` (the id of the message it quoted, or `null`) — or, for an event that carries none, `ctx.message` itself is `null` and none of those fields are reachable. `ctx.reply()` still quotes it by id, so an answer never floats free in a busy chat. There is no flag: on the rare event that carries no message id it sends a plain message instead.
 
 Handlers run concurrently, and an event is acked only after its handler settles — so a
 crash mid-handler redelivers rather than loses. **Do not block inside a handler.** A

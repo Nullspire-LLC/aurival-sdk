@@ -24,7 +24,7 @@ from .errors import (
     RateLimitError,
     SessionSuperseded,
 )
-from .events import Command, Context, Event
+from .events import Command, Context, Event, Message
 from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
 from .status import StatusReporter
@@ -65,6 +65,10 @@ class Bot:
     # still `from aurival import Bot, Context`, this is a fallback, not the
     # taught path.
     Context = Context
+
+    # Same reasoning as `Context` above: `Bot.Message` resolves for a
+    # developer who only imported `Bot`, without requiring a second import.
+    Message = Message
 
     def __init__(
         self,

@@ -814,6 +814,82 @@ def test_s13_more_than_fifty_commands_is_refused_before_connect(
     assert "commands registered, but the cap is 50 per bot" in bot.transcript(), bot.transcript()
 
 
+# --- BA-R42: ctx.message carries the invoking message, not just its id -----
+
+
+ECHO_BOT = """
+import logging
+from aurival import Bot
+
+logging.basicConfig(level=logging.DEBUG)
+bot = Bot()
+
+@bot.command("echo", "Echo back what ctx.message carried")
+async def echo(ctx):
+    assert ctx.message is not None, "ctx.message must not be None for a real invocation"
+    assert ctx.message.sender is not None, "ctx.message.sender must be populated"
+    await ctx.reply(
+        f"text={ctx.message.text!r} reply_to={ctx.message.reply_to!r} "
+        f"sender={ctx.message.sender.handle!r}"
+    )
+
+bot.run()
+"""
+
+
+def invoke_reply_when_routed(
+    bed: Testbed, bot: BotProcess, text: str, reply_to: str
+) -> dict[str, object]:
+    """Like `invoke_when_routed`, but for a message that itself quotes an
+    earlier one — the testbed's `/__test/invoke` accepts an optional
+    `reply_to` (backend-go/cmd/bot-api-testbed, direct-writer lane only)."""
+    deadline = time.monotonic() + 90
+    last: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        last = post(
+            bed.host, "/__test/invoke", {"chat": bed["chat"], "text": text, "reply_to": reply_to}
+        )
+        if last.get("queued") == 1:
+            return last
+        if bot.proc.poll() is not None:
+            raise AssertionError(f"the bot exited before command sync landed:\n{bot.transcript()}")
+        time.sleep(0.5)
+    raise AssertionError(
+        f"the invoke never queued an event, so command sync never landed: {last}\n"
+        f"{bot.transcript()}"
+    )
+
+
+def test_ba_r42_ctx_message_carries_the_full_invoking_message(
+    testbed_factory: Callable[..., Testbed], run_bot: Callable[..., BotProcess]
+) -> None:
+    """`ctx.message` used to be a bare `msg_…` id string. It is now a `Message`
+    object built from the wire's `invoking_message`, and the object it builds
+    against a REAL server must carry the real text, the real sender, and a real
+    `reply_to` — not just an id (BA-R42).
+
+    A first plain message is sent to get a real `msg_…` id to quote. A second
+    message, a command, quotes it via the testbed's `reply_to` support (TASK C).
+    The handler asserts on `ctx.message` from the inside — a wrong SDK mapping
+    fails the handler and the bot never replies at all — and this test asserts
+    on the reply text from the outside as the independent, external proof.
+    """
+    bed = testbed_factory()
+    bot = run_bot(bed, ECHO_BOT)
+    pair_and_approve(bed, bot)
+
+    first = post(bed.host, "/__test/invoke", {"chat": bed["chat"], "text": "a plain first message"})
+    first_id = first["message"]
+    assert isinstance(first_id, str) and first_id.startswith("msg_"), first
+
+    invoke_reply_when_routed(bed, bot, "/echo hello there", reply_to=first_id)
+
+    expected = (
+        f"text='/echo hello there' reply_to={first_id!r} sender={bed['owner_handle']!r}"
+    )
+    wait_for_reply(bed, expected, timeout=90)
+
+
 def test_a_bot_gets_events_with_no_allowlist_anywhere_in_the_environment(
     testbed_factory: Callable[..., Testbed], run_bot: Callable[..., BotProcess]
 ) -> None:

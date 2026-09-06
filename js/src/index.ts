@@ -71,7 +71,7 @@ export {
   fromEnvelope,
 } from './errors.js';
 export { Context, Event } from './events.js';
-export type { Chat, Command, User } from './events.js';
+export type { Chat, Command, Message, User } from './events.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 
-export const version = '0.1.7';
+export const version = '0.1.8';

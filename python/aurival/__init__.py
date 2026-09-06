@@ -65,10 +65,10 @@ from .errors import (
     UnknownParameter,
     from_envelope,
 )
-from .events import Chat, Command, Context, Event, User
+from .events import Chat, Command, Context, Event, Message, User
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -111,6 +111,7 @@ __all__ = [
     "InvalidRequestError",
     "KeyAlreadyPaired",
     "KeyRevoked",
+    "Message",
     "NotFound",
     "PairRateLimited",
     "ParameterInvalid",

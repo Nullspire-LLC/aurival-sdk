@@ -82,13 +82,11 @@ async def say(ctx: Context):
     ctx.arguments  # the raw rest of the line, unparsed, possibly ""
     ctx.chat       # Chat(id, type, name)
     ctx.sender     # User(id, handle, name)
+    ctx.message.text  # "/say hi" — the invoking message, verbatim
     await ctx.reply("…")
 ```
 
-`ctx.message` is the id of the message that invoked the command, or `None` for an event
-that carries none. `ctx.reply()` quotes that message by default, so an answer never floats
-free in a busy chat — there is no flag; on the rare event with no message id it sends a
-plain message instead.
+`ctx.message` now arrives in full: a `Message` with `ctx.message.id`, `.text`, `.sent_at`, `.sender`, and `.reply_to` (the id of the message it quoted, or `None`) — or, for an event that carries none, `ctx.message.id` and the rest are unreachable because `ctx.message` itself is `None`. `ctx.reply()` still quotes it by id by default, so an answer never floats free in a busy chat — there is no flag; on the rare event with no message id it sends a plain message instead.
 
 Handlers run concurrently, and an event is acked only after its handler returns — so a
 crash mid-handler redelivers rather than loses. **Do not block inside a handler.** A
