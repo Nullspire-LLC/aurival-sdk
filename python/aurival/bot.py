@@ -60,6 +60,12 @@ class Bot:
     the key lands in ./.aurival/. Every later run just starts.
     """
 
+    # A convenience alias so `Bot.Context` resolves for a developer who only
+    # imported `Bot` — the annotated signature everywhere else in the docs is
+    # still `from aurival import Bot, Context`, this is a fallback, not the
+    # taught path.
+    Context = Context
+
     def __init__(
         self,
         *,

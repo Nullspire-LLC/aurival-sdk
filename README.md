@@ -15,12 +15,23 @@ This repository holds the official Aurival bot SDKs:
 
 ## Install
 
+**Python**
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv
+```
+
+```bash
+. .venv/bin/activate
+```
+
+The first two commands matter on current Debian, Ubuntu and Fedora, whose system Python refuses `pip install` outside a virtual environment (PEP 668).
+
+```bash
 pip install aurival
 ```
 
-The first line matters on current Debian, Ubuntu and Fedora, whose system Python refuses `pip install` outside a virtual environment (PEP 668).
+**JavaScript**
 
 ```bash
 npm install aurival

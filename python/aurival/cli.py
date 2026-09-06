@@ -21,13 +21,13 @@ from .http import HttpClient
 # The README's quick-start bot, spaced for PEP 8 rather than for prose — the two
 # differ in blank lines and in nothing else, which is what test_readme.py pins.
 # A developer who read the docs must get the file the docs showed them.
-BOT_TEMPLATE = """from aurival import Bot
+BOT_TEMPLATE = """from aurival import Bot, Context
 
 bot = Bot()
 
 
 @bot.command("ping", "Check that the bot is alive")
-async def ping(ctx):
+async def ping(ctx: Context):
     await ctx.reply("pong")
 
 

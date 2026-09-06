@@ -32,9 +32,15 @@ Learn one and you have learned the other.
 
 ## Start from nothing
 
-```
+```bash
 npm install aurival
+```
+
+```bash
 npx aurival init
+```
+
+```bash
 node bot.js
 ```
 

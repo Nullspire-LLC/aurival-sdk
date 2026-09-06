@@ -129,6 +129,6 @@ describe('the public surface', () => {
   });
 
   it('reports a version', () => {
-    expect(aurival.version).toBe('0.1.5');
+    expect(aurival.version).toBe('0.1.6');
   });
 });

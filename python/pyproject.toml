@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurival"
-version = "0.1.5"
+version = "0.1.6"
 description = "Write a bot for Aurival. Declare commands, call run(), we handle the rest."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,9 @@ aurival = "aurival.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["aurival*"]
+
+[tool.setuptools.package-data]
+aurival = ["py.typed"]
 
 [tool.ruff]
 line-length = 100

@@ -9,12 +9,12 @@
 </p>
 
 ```python
-from aurival import Bot
+from aurival import Bot, Context
 
 bot = Bot()
 
 @bot.command("ping", "Check that the bot is alive")
-async def ping(ctx):
+async def ping(ctx: Context):
     await ctx.reply("pong")
 
 bot.run()
@@ -26,15 +26,35 @@ A bot can declare up to 50 commands, the SDK refuses to connect past that.
 
 ## Getting started
 
+Create a virtual environment.
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv
+```
+
+Activate it.
+
+```bash
+. .venv/bin/activate
+```
+
+The venv matters on current Debian, Ubuntu and Fedora, whose system Python refuses
+`pip install` outside a virtual environment (PEP 668).
+
+Install the SDK.
+
+```bash
 pip install aurival
+```
+
+Scaffold a starter bot.
+
+```bash
 aurival init
 ```
 
-The venv line matters on current Debian, Ubuntu and Fedora, whose system Python refuses
-`pip install` outside a virtual environment (PEP 668). `aurival init` pairs this machine and
-writes the `bot.py` above for you. Run `python bot.py` when it's done.
+`aurival init` pairs this machine and writes the `bot.py` above for you. Run `python bot.py`
+when it's done.
 
 ## First run
 
@@ -57,7 +77,7 @@ machine you revoke; a leaked token would be the bot.
 
 ```python
 @bot.command("say")
-async def say(ctx):
+async def say(ctx: Context):
     ctx.command    # "say"
     ctx.arguments  # the raw rest of the line, unparsed, possibly ""
     ctx.chat       # Chat(id, type, name)
@@ -81,7 +101,7 @@ still acked:
 
 ```python
 @bot.on_error
-async def on_error(error, ctx):
+async def on_error(error, ctx: Context | None):
     ...   # ctx is None for anything that did not come from a handler
 ```
 
