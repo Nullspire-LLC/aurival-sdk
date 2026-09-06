@@ -99,9 +99,43 @@ export function reconnected(durationMs: number, quiet: boolean): void {
   emit(`aurival: reconnected after ${formatDuration(durationMs)}`, 'green', quiet);
 }
 
+/** Friendlier one-line text for the two fatal codes a bot operator hits by
+ * ordinary use (a second connection, a pause from the app) rather than by
+ * misconfiguration. Every other code keeps the generic `code: message` form. */
+const FRIENDLY_STOPPED: Readonly<Record<string, string>> = {
+  session_superseded:
+    'another copy of this bot connected (elsewhere). One socket per bot: stop the other copy, then start this one again.',
+  bot_suspended: 'this bot is paused by its owner. Resume it from the app, then start again.',
+};
+
 /** When the bye-action table resolves to `raise`, right before it propagates. */
-export function stopped(code: string, message: string, quiet: boolean): void {
+export function stopped(code: string, message: string, quiet: boolean, docUrl?: string): void {
+  const friendly = FRIENDLY_STOPPED[code];
+  if (friendly !== undefined) {
+    let line = `aurival: stopped — ${friendly}`;
+    if (docUrl !== undefined) line += `\n${docUrl}`;
+    emit(line, 'red', quiet);
+    return;
+  }
   emit(`aurival: stopped — ${code}: ${message}`, 'red', quiet);
+}
+
+/** A second `command(...)` registration for the same name at startup — the
+ * overwrite silently wins today, and this makes it visible before it costs
+ * someone a debugging session (SDK ergonomics, not a wire concern). */
+export function duplicateCommand(name: string, quiet: boolean): void {
+  emit(`aurival: command "${name}" registered twice, the later definition wins`, 'yellow', quiet);
+}
+
+/** Before the first connect, when zero commands were ever registered — a bot
+ * that will sit there forever with nothing to do, printed while there is
+ * still time to notice and add one. */
+export function noCommands(quiet: boolean): void {
+  emit(
+    'aurival: no commands registered, this bot will connect and wait forever. Add @bot.command(...) before run().',
+    'yellow',
+    quiet,
+  );
 }
 
 /** SIGINT/SIGTERM leading to a clean shutdown. */

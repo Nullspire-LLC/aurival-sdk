@@ -47,6 +47,21 @@ def _use_color(stream: TextIO) -> bool:
         return False
 
 
+# Codes whose bare `{code}: {message}` reads like a crash rather than a
+# designed stop — a second connection, or an owner pausing the bot from the
+# app. Friendlier text, plus the doc_url on its own line so the developer can
+# read the full story. Every other code is untouched.
+_FRIENDLY_STOPPED: dict[str, str] = {
+    "session_superseded": (
+        "another copy of this bot connected (elsewhere). One socket per "
+        "bot: stop the other copy, then start this one again."
+    ),
+    "bot_suspended": (
+        "this bot is paused by its owner. Resume it from the app, then start again."
+    ),
+}
+
+
 class StatusReporter:
     """One reporter per `Bot`, held by the bot and shared into its `Socket`
     so both sides of the connecting/connected/reconnecting story print
@@ -87,8 +102,28 @@ class StatusReporter:
     def reconnected(self, *, duration_s: float) -> None:
         self._emit(f"aurival: reconnected after {format_duration(duration_s)}", _GREEN)
 
-    def stopped(self, *, code: str, message: str) -> None:
+    def stopped(self, *, code: str, message: str, doc_url: str | None = None) -> None:
+        friendly = _FRIENDLY_STOPPED.get(code)
+        if friendly is not None:
+            text = f"aurival: stopped — {friendly}"
+            if doc_url is not None:
+                text = f"{text}\n{doc_url}"
+            self._emit(text, _RED)
+            return
         self._emit(f"aurival: stopped — {code}: {message}", _RED)
+
+    def duplicate_command(self, name: str) -> None:
+        self._emit(
+            f'aurival: command "{name}" registered twice, the later definition wins',
+            _YELLOW,
+        )
+
+    def no_commands(self) -> None:
+        self._emit(
+            "aurival: no commands registered, this bot will connect and wait "
+            "forever. Add @bot.command(...) before run().",
+            _YELLOW,
+        )
 
     def disconnected(self, *, duration_s: float) -> None:
         self._emit(f"aurival: disconnected after {format_duration(duration_s)}", None)

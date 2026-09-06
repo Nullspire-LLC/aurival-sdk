@@ -16,7 +16,14 @@ from pathlib import Path
 import aiohttp
 
 from .auth import Auth, KeyFile, machine_label, pair, resolve_host
-from .errors import AurivalAPIError, AurivalError, KeyRevoked, RateLimitError
+from .errors import (
+    AurivalAPIError,
+    AurivalError,
+    BotSuspended,
+    KeyRevoked,
+    RateLimitError,
+    SessionSuperseded,
+)
 from .events import Command, Context, Event
 from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
@@ -72,7 +79,10 @@ class Bot:
         validator (SDK-29), and it lowercases and trims before it checks."""
 
         def decorate(fn: Handler) -> Handler:
-            self._registered[self._lookup_key(name)] = _Registered(
+            key = self._lookup_key(name)
+            if key in self._registered:
+                self._status.duplicate_command(name)
+            self._registered[key] = _Registered(
                 command=Command(name=name, description=description), handler=fn
             )
             return fn
@@ -99,6 +109,12 @@ class Bot:
             asyncio.run(self.start())
         except KeyboardInterrupt:
             pass
+        except (SessionSuperseded, BotSuspended):
+            # The friendly line was already printed by the reporter, inside
+            # socket.run(), before this exception ever reached here — a
+            # traceback on top of it would make a designed stop read like a
+            # crash. Every other fatal bye keeps raising as before.
+            sys.exit(1)
 
     async def start(self) -> None:
         host = self._host or resolve_host()
@@ -137,6 +153,8 @@ class Bot:
                 sync_task = await self._sync_commands(http, machine.bot)
                 self._install_signal_handlers(stop)
 
+                if not self._registered:
+                    self._status.no_commands()
                 self._status.connecting(machine.bot)
                 socket = Socket(
                     http,

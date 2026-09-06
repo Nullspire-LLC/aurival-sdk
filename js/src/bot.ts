@@ -2,7 +2,7 @@
 
 import { Auth, KeyFile, machineLabel, pair, resolveHost } from './auth.js';
 import type { Machine, MachineKey } from './auth.js';
-import { AurivalError, RateLimitError } from './errors.js';
+import { AurivalError, BotSuspended, RateLimitError, SessionSuperseded } from './errors.js';
 import { Context, Event } from './events.js';
 import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
 import type { Command } from './events.js';
@@ -142,7 +142,9 @@ export class Bot {
     const description = typeof second === 'string' ? second : '';
     const handler = typeof second === 'string' ? third : second;
     if (handler === undefined) throw new AurivalError(`command(${name}) needs a handler`);
-    this.#registered.set(lookupKey(name), { command: { name, description }, handler });
+    const key = lookupKey(name);
+    if (this.#registered.has(key)) status.duplicateCommand(name, this.#quiet);
+    this.#registered.set(key, { command: { name, description }, handler });
   }
 
   /**
@@ -163,6 +165,18 @@ export class Bot {
     process.on('SIGTERM', stop);
     try {
       await this.start(controller.signal);
+    } catch (err) {
+      // The default usage in the README is fire-and-forget `bot.run();` —
+      // for these two, the friendly `status.stopped` line already explained
+      // what happened, so rethrowing here would turn it into an unhandled
+      // rejection traceback on the default path (and `process.exit()` would
+      // cut off pending I/O for a caller who DID await this). Every other
+      // fatal bye still rethrows exactly as before.
+      if (err instanceof SessionSuperseded || err instanceof BotSuspended) {
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
     } finally {
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
@@ -190,6 +204,7 @@ export class Bot {
 
     const syncRetry = await this.#syncCommands(http, machine.bot, abort);
 
+    if (this.#registered.size === 0) status.noCommands(this.#quiet);
     status.connecting(machine.bot, this.#quiet);
     const socket = new Socket(http, auth, {
       dispatch: (event) => this.#dispatch(event),

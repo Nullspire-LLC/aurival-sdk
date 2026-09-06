@@ -306,3 +306,74 @@ async def test_socket_status_lines_suppressed_when_quiet():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+# --------------------------------------------------------------------------
+# stopped(): friendlier text for session_superseded / bot_suspended,
+# with a doc_url line appended; every other code unchanged.
+# --------------------------------------------------------------------------
+
+
+def test_stopped_session_superseded_is_friendly_and_names_the_doc_url():
+    stream = _FakeStream(tty=False)
+    StatusReporter(stream=stream).stopped(
+        code="session_superseded",
+        message="bye: session_superseded",
+        doc_url="https://bots.aurival.com/docs/errors#session_superseded",
+    )
+    out = stream.getvalue()
+    assert out == (
+        "aurival: stopped — another copy of this bot connected (elsewhere). "
+        "One socket per bot: stop the other copy, then start this one again.\n"
+        "https://bots.aurival.com/docs/errors#session_superseded\n"
+    )
+
+
+def test_stopped_bot_suspended_is_friendly_and_names_the_doc_url():
+    stream = _FakeStream(tty=False)
+    StatusReporter(stream=stream).stopped(
+        code="bot_suspended",
+        message="bye: bot_suspended",
+        doc_url="https://bots.aurival.com/docs/errors#bot_suspended",
+    )
+    out = stream.getvalue()
+    assert out == (
+        "aurival: stopped — this bot is paused by its owner. "
+        "Resume it from the app, then start again.\n"
+        "https://bots.aurival.com/docs/errors#bot_suspended\n"
+    )
+
+
+def test_stopped_other_codes_are_unchanged_by_the_doc_url_kwarg():
+    stream = _FakeStream(tty=False)
+    StatusReporter(stream=stream).stopped(
+        code="key_revoked",
+        message="this key was revoked.",
+        doc_url="https://bots.aurival.com/docs/errors#key_revoked",
+    )
+    out = stream.getvalue()
+    assert out == "aurival: stopped — key_revoked: this key was revoked.\n"
+
+
+# --------------------------------------------------------------------------
+# duplicate_command / no_commands: new footgun warnings
+# --------------------------------------------------------------------------
+
+
+def test_duplicate_command_line_shape_and_color():
+    stream = _FakeStream(tty=True)
+    StatusReporter(stream=stream).duplicate_command("ping")
+    out = stream.getvalue()
+    assert 'aurival: command "ping" registered twice, the later definition wins' in out
+    assert "\033[33m" in out  # yellow
+
+
+def test_no_commands_line_shape_and_color():
+    stream = _FakeStream(tty=True)
+    StatusReporter(stream=stream).no_commands()
+    out = stream.getvalue()
+    assert (
+        "aurival: no commands registered, this bot will connect and wait forever. "
+        "Add @bot.command(...) before run()." in out
+    )
+    assert "\033[33m" in out  # yellow

@@ -394,3 +394,206 @@ def test_every_error_class_is_exported_from_the_package() -> None:
 
     unbound = sorted(n for n in aurival.__all__ if not hasattr(aurival, n))
     assert not unbound, f"named in __all__ but not importable: {unbound}"
+
+
+# --- footgun A: a fatal bye that reads like a designed stop, not a crash ----
+
+
+def test_run_exits_cleanly_on_session_superseded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`socket.run()` already printed the friendly line before this exception
+    ever reaches `run()` — this must be a quiet `sys.exit(1)`, no traceback."""
+    from aurival.errors import SessionSuperseded
+
+    bot = Bot()
+
+    async def fake_start() -> None:
+        raise SessionSuperseded(
+            type="invalid_request_error",
+            code="session_superseded",
+            message="bye: session_superseded",
+            doc_url="https://bots.aurival.com/docs/errors#session_superseded",
+            request_id=None,
+        )
+
+    monkeypatch.setattr(bot, "start", fake_start)
+    with pytest.raises(SystemExit) as exc_info:
+        bot.run()
+    assert exc_info.value.code == 1
+
+
+def test_run_exits_cleanly_on_bot_suspended(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aurival.errors import BotSuspended
+
+    bot = Bot()
+
+    async def fake_start() -> None:
+        raise BotSuspended(
+            type="permission_error",
+            code="bot_suspended",
+            message="bye: bot_suspended",
+            doc_url="https://bots.aurival.com/docs/errors#bot_suspended",
+            request_id=None,
+        )
+
+    monkeypatch.setattr(bot, "start", fake_start)
+    with pytest.raises(SystemExit) as exc_info:
+        bot.run()
+    assert exc_info.value.code == 1
+
+
+def test_run_still_raises_other_fatal_byes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every other fatal bye (e.g. key_revoked) must keep raising exactly as
+    today — only the two named footguns get the quiet exit."""
+    from aurival.errors import KeyRevoked
+
+    bot = Bot()
+
+    async def fake_start() -> None:
+        raise KeyRevoked(
+            type="authentication_error",
+            code="key_revoked",
+            message="this key was revoked.",
+            doc_url="https://bots.aurival.com/docs/errors#key_revoked",
+            request_id=None,
+        )
+
+    monkeypatch.setattr(bot, "start", fake_start)
+    with pytest.raises(KeyRevoked):
+        bot.run()
+
+
+# --- footgun B: silent duplicate-command overwrite and zero-command connect -
+
+
+def test_duplicate_command_registration_warns_and_later_wins() -> None:
+    import io
+
+    from aurival.status import StatusReporter
+
+    stream = io.StringIO()
+    bot = Bot()
+    bot._status = StatusReporter(stream=stream)
+
+    @bot.command("ping")
+    async def first(ctx: Any) -> None: ...
+
+    @bot.command("ping")
+    async def second(ctx: Any) -> None: ...
+
+    out = stream.getvalue()
+    assert 'aurival: command "ping" registered twice, the later definition wins' in out
+    assert bot._registered["ping"].handler is second
+
+
+def test_no_duplicate_warning_for_distinct_command_names() -> None:
+    import io
+
+    from aurival.status import StatusReporter
+
+    stream = io.StringIO()
+    bot = Bot()
+    bot._status = StatusReporter(stream=stream)
+
+    @bot.command("ping")
+    async def first(ctx: Any) -> None: ...
+
+    @bot.command("pong")
+    async def second(ctx: Any) -> None: ...
+
+    assert stream.getvalue() == ""
+
+
+async def test_start_warns_when_zero_commands_are_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from aurival.status import StatusReporter
+
+    http = _StubHttp()
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    class _KeyFile:
+        def __init__(self, path: object = None) -> None: ...
+
+        def load(self) -> tuple[object, object]:
+            return (object(), type("M", (), {"bot": "bot_1"})())
+
+        def save(self, *a: object) -> None: ...
+
+    class _Socket:
+        def __init__(self, *a: object, **kw: object) -> None: ...
+
+        async def run(self, stop: asyncio.Event) -> None:
+            return None
+
+    monkeypatch.setattr(bot_module.aiohttp, "ClientSession", lambda *a, **k: _Session())
+    monkeypatch.setattr(bot_module, "KeyFile", _KeyFile)
+    monkeypatch.setattr(bot_module, "Auth", lambda *a, **k: object())
+    monkeypatch.setattr(bot_module, "HttpClient", lambda *a, **k: http)
+    monkeypatch.setattr(bot_module, "Socket", _Socket)
+    monkeypatch.setattr(bot_module, "resolve_host", lambda: bot_module.DEFAULT_HOST)
+
+    stream = io.StringIO()
+    bot = Bot()
+    bot._status = StatusReporter(stream=stream)
+
+    await bot.start()
+
+    assert (
+        "aurival: no commands registered, this bot will connect and wait forever. "
+        "Add @bot.command(...) before run()." in stream.getvalue()
+    )
+
+
+async def test_start_does_not_warn_when_commands_are_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from aurival.status import StatusReporter
+
+    http = _StubHttp()
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    class _KeyFile:
+        def __init__(self, path: object = None) -> None: ...
+
+        def load(self) -> tuple[object, object]:
+            return (object(), type("M", (), {"bot": "bot_1"})())
+
+        def save(self, *a: object) -> None: ...
+
+    class _Socket:
+        def __init__(self, *a: object, **kw: object) -> None: ...
+
+        async def run(self, stop: asyncio.Event) -> None:
+            return None
+
+    monkeypatch.setattr(bot_module.aiohttp, "ClientSession", lambda *a, **k: _Session())
+    monkeypatch.setattr(bot_module, "KeyFile", _KeyFile)
+    monkeypatch.setattr(bot_module, "Auth", lambda *a, **k: object())
+    monkeypatch.setattr(bot_module, "HttpClient", lambda *a, **k: http)
+    monkeypatch.setattr(bot_module, "Socket", _Socket)
+    monkeypatch.setattr(bot_module, "resolve_host", lambda: bot_module.DEFAULT_HOST)
+
+    stream = io.StringIO()
+    bot = Bot()
+    bot._status = StatusReporter(stream=stream)
+
+    @bot.command("ping")
+    async def ping(ctx: Any) -> None: ...
+
+    await bot.start()
+
+    assert "no commands registered" not in stream.getvalue()

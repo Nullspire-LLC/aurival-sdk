@@ -248,7 +248,7 @@ export class Socket {
 
       const action = actionForBye(bye.code, bye.type);
       if (action === ByeAction.RAISE) {
-        status.stopped(bye.code, bye.message, this.#quiet);
+        status.stopped(bye.code, bye.message, this.#quiet, bye.doc_url);
         throw bye;
       }
       if (action === ByeAction.REAUTH_RECONNECT) {

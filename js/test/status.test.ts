@@ -225,6 +225,103 @@ describe('stopped', () => {
     status.stopped('key_revoked', 'go fix it', true);
     expect(lines).toEqual([]);
   });
+
+  it('uses friendlier text for session_superseded, no docUrl line by default', () => {
+    setTTY(false);
+    status.stopped('session_superseded', 'ignored, friendly text wins', false);
+    expect(lines).toEqual([
+      'aurival: stopped — another copy of this bot connected (elsewhere). One socket per bot: stop the other copy, then start this one again.',
+    ]);
+  });
+
+  it('appends a doc_url line for session_superseded when given', () => {
+    setTTY(false);
+    status.stopped(
+      'session_superseded',
+      'ignored, friendly text wins',
+      false,
+      'https://bots.aurival.com/docs/errors#session_superseded',
+    );
+    expect(lines).toEqual([
+      'aurival: stopped — another copy of this bot connected (elsewhere). One socket per bot: stop the other copy, then start this one again.\nhttps://bots.aurival.com/docs/errors#session_superseded',
+    ]);
+  });
+
+  it('uses friendlier text for bot_suspended, no docUrl line by default', () => {
+    setTTY(false);
+    status.stopped('bot_suspended', 'ignored, friendly text wins', false);
+    expect(lines).toEqual([
+      'aurival: stopped — this bot is paused by its owner. Resume it from the app, then start again.',
+    ]);
+  });
+
+  it('appends a doc_url line for bot_suspended when given', () => {
+    setTTY(false);
+    status.stopped(
+      'bot_suspended',
+      'ignored, friendly text wins',
+      false,
+      'https://bots.aurival.com/docs/errors#bot_suspended',
+    );
+    expect(lines).toEqual([
+      'aurival: stopped — this bot is paused by its owner. Resume it from the app, then start again.\nhttps://bots.aurival.com/docs/errors#bot_suspended',
+    ]);
+  });
+
+  it('ignores docUrl for every other code, unchanged one-line format', () => {
+    setTTY(false);
+    status.stopped(
+      'key_revoked',
+      'this key was revoked, remove ./.aurival/ and pair again',
+      false,
+      'https://bots.aurival.com/docs/errors#key_revoked',
+    );
+    expect(lines).toEqual([
+      'aurival: stopped — key_revoked: this key was revoked, remove ./.aurival/ and pair again',
+    ]);
+  });
+});
+
+describe('duplicateCommand', () => {
+  it('prints the exact duplicate-registration line', () => {
+    setTTY(false);
+    status.duplicateCommand('ping', false);
+    expect(lines).toEqual(['aurival: command "ping" registered twice, the later definition wins']);
+  });
+
+  it('colors yellow on a TTY', () => {
+    setTTY(true);
+    status.duplicateCommand('ping', false);
+    expect(lines[0]).toBe(
+      '\x1b[33maurival: command "ping" registered twice, the later definition wins\x1b[0m',
+    );
+  });
+
+  it('is silent when quiet', () => {
+    status.duplicateCommand('ping', true);
+    expect(lines).toEqual([]);
+  });
+});
+
+describe('noCommands', () => {
+  it('prints the exact no-commands-registered line', () => {
+    setTTY(false);
+    status.noCommands(false);
+    expect(lines).toEqual([
+      'aurival: no commands registered, this bot will connect and wait forever. Add @bot.command(...) before run().',
+    ]);
+  });
+
+  it('colors yellow on a TTY', () => {
+    setTTY(true);
+    status.noCommands(false);
+    expect(lines[0]?.startsWith('\x1b[33m')).toBe(true);
+  });
+
+  it('is silent when quiet', () => {
+    status.noCommands(true);
+    expect(lines).toEqual([]);
+  });
 });
 
 describe('disconnected', () => {

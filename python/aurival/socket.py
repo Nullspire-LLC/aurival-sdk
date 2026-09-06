@@ -173,7 +173,9 @@ class Socket:
                 action = action_for_bye(bye.code, bye.type)
                 if action is ByeAction.RAISE:
                     if self._reporter is not None:
-                        self._reporter.stopped(code=bye.code, message=bye.message)
+                        self._reporter.stopped(
+                            code=bye.code, message=bye.message, doc_url=bye.doc_url
+                        )
                     raise bye
                 if action is ByeAction.REAUTH_RECONNECT:
                     try:

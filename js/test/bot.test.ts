@@ -4,13 +4,17 @@
  * silence it exists to end: the developer whose command never fires.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { reportConflicts, syncCommandsAndReport } from '../src/bot.js';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { Bot, reportConflicts, syncCommandsAndReport } from '../src/bot.js';
+import { AurivalError, BotSuspended, SessionSuperseded } from '../src/errors.js';
 import { HttpClient } from '../src/http.js';
 import type { Logger } from '../src/http.js';
-import type { Auth } from '../src/auth.js';
+import { KeyFile, MachineKey, type Auth, type Machine } from '../src/auth.js';
 
 function recorder(): { log: Logger; warnings: string[] } {
   const warnings: string[] = [];
@@ -102,5 +106,214 @@ describe('reportConflicts', () => {
     reportConflicts(listOf([{ name: 'ping' }, 7 as unknown as Record<string, unknown>]), log);
     reportConflicts(listOf([command('ping', [1 as unknown as string])]), log);
     expect(warnings).toEqual([]);
+  });
+});
+
+// --------------------------------------------------------------------------
+// ergonomics: two silent footguns at startup (a duplicate registration that
+// overwrites without a word, and a bot that will connect and wait forever
+// because nothing was ever registered).
+// --------------------------------------------------------------------------
+
+let stderrLines: string[];
+let errorSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  stderrLines = [];
+  errorSpy = vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+    stderrLines.push(String(line));
+  });
+});
+
+afterEach(() => {
+  errorSpy.mockRestore();
+});
+
+describe('Bot#run', () => {
+  it('does not rethrow SessionSuperseded — a clean exit via process.exitCode, no traceback', async () => {
+    const bot = new Bot({ quiet: true });
+    vi.spyOn(bot, 'start').mockRejectedValue(
+      new SessionSuperseded({
+        type: 'invalid_request_error',
+        code: 'session_superseded',
+        message: 'displaced',
+        doc_url: 'https://bots.aurival.com/docs/errors#session_superseded',
+      }),
+    );
+    const before = process.exitCode;
+    try {
+      await expect(bot.run()).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
+  it('does not rethrow BotSuspended either', async () => {
+    const bot = new Bot({ quiet: true });
+    vi.spyOn(bot, 'start').mockRejectedValue(
+      new BotSuspended({
+        type: 'permission_error',
+        code: 'bot_suspended',
+        message: 'paused',
+        doc_url: 'https://bots.aurival.com/docs/errors#bot_suspended',
+      }),
+    );
+    const before = process.exitCode;
+    try {
+      await expect(bot.run()).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
+  it('rethrows every other fatal error unchanged', async () => {
+    const bot = new Bot({ quiet: true });
+    const boom = new AurivalError('boom');
+    vi.spyOn(bot, 'start').mockRejectedValue(boom);
+    await expect(bot.run()).rejects.toBe(boom);
+  });
+});
+
+describe('Bot#command duplicate registration', () => {
+  it('warns once, naming the command, when the same name is registered twice', () => {
+    const bot = new Bot({ quiet: false });
+    bot.command('ping', async () => undefined);
+    expect(stderrLines).toEqual([]);
+    bot.command('ping', async () => undefined);
+    expect(stderrLines).toEqual([
+      'aurival: command "ping" registered twice, the later definition wins',
+    ]);
+  });
+
+  it('is case/whitespace-insensitive for the dedup check, but names the command as passed', () => {
+    const bot = new Bot({ quiet: false });
+    bot.command('Ping', async () => undefined);
+    bot.command(' ping ', async () => undefined);
+    expect(stderrLines).toEqual([
+      'aurival: command " ping " registered twice, the later definition wins',
+    ]);
+  });
+
+  it('says nothing for two different commands', () => {
+    const bot = new Bot({ quiet: false });
+    bot.command('ping', async () => undefined);
+    bot.command('pong', async () => undefined);
+    expect(stderrLines).toEqual([]);
+  });
+
+  it('is silent when quiet', () => {
+    const bot = new Bot({ quiet: true });
+    bot.command('ping', async () => undefined);
+    bot.command('ping', async () => undefined);
+    expect(stderrLines).toEqual([]);
+  });
+});
+
+/**
+ * A minimal real `node:http` server for `Bot#start`'s pre-connect leg: the
+ * token exchange and the command sync PUT. No mocked `fetch` (repo
+ * convention, see `auth.test.ts`) — a real server on an ephemeral port.
+ */
+function startFakeBotAPI(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      for await (const _chunk of req) void _chunk;
+      if (req.url === '/v1/token' && req.method === 'POST') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }),
+        );
+        return;
+      }
+      if (req.url?.startsWith('/v1/bots/') && req.url.endsWith('/commands') && req.method === 'PUT') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [], has_more: false, next_cursor: null }));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          type: 'invalid_request_error',
+          code: 'not_found',
+          message: 'not found',
+          doc_url: 'https://bots.aurival.com/docs/errors#not_found',
+        }),
+      );
+    })();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+describe('Bot#start with zero registered commands', () => {
+  it('warns before connecting, and still proceeds to connect', async () => {
+    const api = await startFakeBotAPI();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: api.url,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+
+    try {
+      const bot = new Bot({ host: api.url, keyPath, quiet: false });
+      // Zero commands registered on purpose. Signal starts pre-aborted so
+      // `Socket#run` returns immediately without ever dialing a gateway —
+      // everything under test (sync, the warning, `connecting`) happens
+      // before that point in `Bot#start`.
+      const controller = new AbortController();
+      controller.abort();
+      await bot.start(controller.signal);
+
+      const noCommandsIdx = stderrLines.findIndex((l) => l.includes('no commands registered'));
+      const connectingIdx = stderrLines.findIndex((l) => l.includes('connecting to'));
+      expect(noCommandsIdx).toBeGreaterThanOrEqual(0);
+      expect(connectingIdx).toBeGreaterThanOrEqual(0);
+      expect(noCommandsIdx).toBeLessThan(connectingIdx);
+      expect(stderrLines[noCommandsIdx]).toBe(
+        'aurival: no commands registered, this bot will connect and wait forever. Add @bot.command(...) before run().',
+      );
+    } finally {
+      await api.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('says nothing when at least one command is registered', async () => {
+    const api = await startFakeBotAPI();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: api.url,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+
+    try {
+      const bot = new Bot({ host: api.url, keyPath, quiet: false });
+      bot.command('ping', async () => undefined);
+      const controller = new AbortController();
+      controller.abort();
+      await bot.start(controller.signal);
+
+      expect(stderrLines.some((l) => l.includes('no commands registered'))).toBe(false);
+    } finally {
+      await api.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
