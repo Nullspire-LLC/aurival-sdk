@@ -163,7 +163,7 @@ and "zero runtime dependencies" could not both be true.
 
 ```
 $ npm ls --omit=dev
-aurival@0.1.0
+aurival@0.1.8
 └── (empty)
 ```
 
