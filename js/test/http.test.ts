@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { inspect } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as errors from '../src/errors.js';
 import { HttpClient, type Logger } from '../src/http.js';
 import type { Auth } from '../src/auth.js';
@@ -212,11 +212,81 @@ describe('decoding a successful response', () => {
     );
   });
 
-  it('an empty 200 body becomes a ProtocolError', async () => {
+  it('an empty success body decodes to {} instead of throwing (204 No Content, AMENDMENT-04)', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ url }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await expect(client.request('DELETE', '/v1/x')).resolves.toEqual({});
+      },
+    );
+  });
+
+  it('against a REAL server, a 204 carrying a JSON body still resolves to {} — Node/undici drop the body before fetch() ever sees it, a fact about real servers, not about this code path (see the stubbed-fetch test below for the code path itself)', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ unexpected: 'but decoded' }));
+      },
+      async ({ url }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        // Documented, not desired: real `fetch()` against a real socket
+        // empties `resp.text()` for any null-body status before request()
+        // ever runs (WHATWG fetch spec, 204/205/304). That is unreachable
+        // ONLY against a genuine server — see the stubbed-fetch test below,
+        // which proves the `status === 204 && raw === ''` gate in
+        // request() does decode a 204 body when `fetch()` actually hands it
+        // one (mirrors http.py, which is not subject to the real-server
+        // stripping at all).
+        await expect(client.request('DELETE', '/v1/x')).resolves.toEqual({});
+      },
+    );
+  });
+
+  it('the 204-with-body decode branch itself: a stubbed fetch() that hands request() a 204 with a JSON body decodes it, rather than dropping it', async () => {
+    // The real `Response` constructor itself refuses a body on a null-body
+    // status (204/205/304 all throw a TypeError) — exactly the WHATWG rule
+    // the test above works around by never reaching a real server. So this
+    // stub is a plain object shaped like what `request()` actually reads off
+    // `resp` (`.status`, `.text()`, `.headers.get()`), not a real `Response`.
+    const stub = vi.fn(async () => ({
+      status: 204,
+      text: async () => JSON.stringify({ unexpected: 'but decoded' }),
+      headers: { get: () => null },
+    }));
+    vi.stubGlobal('fetch', stub as unknown as typeof fetch);
+    try {
+      const client = new HttpClient('http://example.invalid', asAuth(new FakeAuth()));
+      await expect(client.request('DELETE', '/v1/x')).resolves.toEqual({
+        unexpected: 'but decoded',
+      });
+      expect(stub).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an empty 200 body is still a ProtocolError — the {} rule is 204-specific, not "empty body"', async () => {
     await withServer(
       (_req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end();
+      },
+      async ({ url }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await expect(client.request('GET', '/v1/x')).rejects.toBeInstanceOf(errors.ProtocolError);
+      },
+    );
+  });
+
+  it('a non-empty success body that is not valid JSON still becomes a ProtocolError', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('not json');
       },
       async ({ url }) => {
         const client = new HttpClient(url, asAuth(new FakeAuth()));
@@ -802,6 +872,138 @@ describe('convenience method wiring', () => {
         for (const req of requests) {
           expect(req.body).toEqual({ chat: 'chat_1', text: 'hi' });
         }
+      },
+    );
+  });
+
+  it('sendMessage carries mentions when given some, omits the field when given none', async () => {
+    await withServer(
+      (_req, res) => sendJson(res, 201, { ok: true }),
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.sendMessage('chat_1', 'hi @a', 'idem-mention-1', null, [{ user: 'usr_1' }]);
+        await client.sendMessage('chat_1', 'hi', 'idem-mention-2', null, []);
+        expect(requests[0]?.body).toEqual({
+          chat: 'chat_1',
+          text: 'hi @a',
+          mentions: [{ user: 'usr_1' }],
+        });
+        expect(requests[1]?.body).toEqual({ chat: 'chat_1', text: 'hi' });
+      },
+    );
+  });
+
+  it('setTyping POSTs .../typing with {is_typing} and its own Idempotency-Key', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.setTyping('chat_1', true);
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('POST');
+        expect(req.url).toBe('/v1/chats/chat_1/typing');
+        expect(req.body).toEqual({ is_typing: true });
+        expect(typeof req.headers['idempotency-key']).toBe('string');
+      },
+    );
+  });
+
+  it('editMessage PATCHes /v1/messages/{msg} with {text}', async () => {
+    await withServer(
+      (_req, res) => sendJson(res, 200, { object: 'message', id: 'msg_1', text: 'new' }),
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        const result = await client.editMessage('msg_1', 'new');
+        expect(result).toEqual({ object: 'message', id: 'msg_1', text: 'new' });
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('PATCH');
+        expect(req.url).toBe('/v1/messages/msg_1');
+        expect(req.body).toEqual({ text: 'new' });
+      },
+    );
+  });
+
+  it('deleteMessage DELETEs /v1/messages/{msg}', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.deleteMessage('msg_1');
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('DELETE');
+        expect(req.url).toBe('/v1/messages/msg_1');
+      },
+    );
+  });
+
+  it('setReaction PUTs the percent-encoded emoji path', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.setReaction('msg_1', '\u{1F44D}');
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('PUT');
+        expect(req.url).toBe(`/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`);
+      },
+    );
+  });
+
+  it('unsetReaction DELETEs the percent-encoded emoji path', async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.unsetReaction('msg_1', '\u{1F44D}');
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('DELETE');
+        expect(req.url).toBe(`/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`);
+      },
+    );
+  });
+
+  it('listMembers GETs /v1/chats/{chat}/members and sends no Idempotency-Key', async () => {
+    await withServer(
+      (_req, res) =>
+        sendJson(res, 200, { object: 'list', data: [], has_more: false, next_cursor: null }),
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        const result = await client.listMembers('chat_1');
+        expect(result).toEqual({ object: 'list', data: [], has_more: false, next_cursor: null });
+        const req = requests[0];
+        if (req === undefined) throw new Error('expected a request');
+        expect(req.method).toBe('GET');
+        expect(req.url).toBe('/v1/chats/chat_1/members');
+        expect(req.headers['idempotency-key']).toBeUndefined();
+      },
+    );
+  });
+
+  it('listMembers carries a cursor in the query string when given one', async () => {
+    await withServer(
+      (_req, res) =>
+        sendJson(res, 200, { object: 'list', data: [], has_more: false, next_cursor: null }),
+      async ({ url, requests }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        await client.listMembers('chat_1', 'cur_1');
+        expect(requests[0]?.url).toBe('/v1/chats/chat_1/members?cursor=cur_1');
       },
     );
   });

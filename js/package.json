@@ -1,6 +1,6 @@
 {
   "name": "aurival",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Write a bot for Aurival. Declare commands, call run(), we handle the rest.",
   "type": "module",
   "main": "./dist/index.js",

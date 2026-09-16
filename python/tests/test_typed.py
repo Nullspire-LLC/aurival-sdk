@@ -40,3 +40,24 @@ def test_bot_context_is_an_alias_for_context() -> None:
 def test_the_init_template_annotates_ctx_with_the_taught_import() -> None:
     assert "from aurival import Bot, Context" in BOT_TEMPLATE
     assert "async def ping(ctx: Context):" in BOT_TEMPLATE
+
+
+def test_bot_on_decorator_and_direct_call_are_both_still_callable_at_runtime() -> None:
+    """`Bot.on` grew `@overload` stubs (decorator form vs. direct-call form) —
+    no mypy is installed in this environment to check them statically, so this
+    is a runtime smoke test that both call shapes the overloads promise still
+    actually work, rather than a static type-check."""
+    bot = Bot()
+
+    @bot.on("member.joined")
+    async def decorated(ctx: Context) -> None:
+        pass
+
+    async def direct(ctx: Context) -> None:
+        pass
+
+    result = bot.on("member.left", direct)
+
+    assert result is direct
+    assert bot._has_event_handler("member.joined")
+    assert bot._has_event_handler("member.left")

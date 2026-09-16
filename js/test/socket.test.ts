@@ -17,6 +17,7 @@ import {
   backlogOverflowedEvent,
   commandInvokedEvent,
   deferred,
+  memberJoinedEvent,
   problemFrame,
   sendHello,
   startGateway,
@@ -143,6 +144,7 @@ export function makeCapturingLogger(): { logger: Logger; records: CapturedLog[] 
 export interface MakeSocketOverrides {
   dispatch?: ((event: Event) => Promise<void>) | undefined;
   onProblem?: ((p: AurivalAPIError | Event) => void) | undefined;
+  hasHandler?: ((type: string) => boolean) | undefined;
   logger?: Logger | undefined;
   seenLimit?: number | undefined;
   backoffBase?: number | undefined;
@@ -181,6 +183,7 @@ export function makeSocket(
   const socket = new Socket(http as unknown as HttpClient, auth as unknown as Auth, {
     dispatch,
     onProblem,
+    hasHandler: overrides.hasHandler,
     logger: overrides.logger,
     seenLimit: overrides.seenLimit,
     backoffBase: overrides.backoffBase ?? 0.01,
@@ -400,6 +403,113 @@ describe('unknown op and unknown event type', () => {
         expect(dispatched.length).toBe(1);
         expect(dispatched[0]?.id).toBe('evt_after');
         expect(gateway.state.acksFor(0)).toContain('evt_future');
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// Generic event dispatch (AMENDMENT-04 R2): the `hasHandler` seam decides
+// whether a non-command.invoked type reaches `dispatch` at all.
+// --------------------------------------------------------------------------
+
+describe('generic event dispatch via hasHandler', () => {
+  it('a type WITH a registered handler is dispatched and acked only after the handler completes', async () => {
+    const { promise: released, resolve: release } = deferred();
+    const gateway = await startGateway(async (conn) => {
+      sendHello(conn);
+      conn.send(memberJoinedEvent('evt_mj'));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    try {
+      const auth = new FakeAuth();
+      const http = new FakeHttpClient(gateway.url);
+      const { socket, dispatched } = makeSocket(http, auth, {
+        hasHandler: (type) => type === 'member.joined',
+        dispatch: async () => {
+          await released;
+        },
+      });
+      const controller = new AbortController();
+      const task = runUntilStopped(socket, controller.signal);
+      try {
+        await waitUntil(() => dispatched.length === 1);
+        expect(dispatched[0]?.type).toBe('member.joined');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(gateway.state.acksFor(0)).toEqual([]); // not acked while the handler is still running
+        release();
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_mj'));
+        expect(ok, 'never acked after the handler returned').toBe(true);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('a type with NO registered handler is ack-and-ignored immediately, same as today, with the debug log', async () => {
+    const { logger, records } = makeCapturingLogger();
+    const gateway = await startGateway(async (conn) => {
+      sendHello(conn);
+      conn.send(memberJoinedEvent('evt_mj2'));
+      conn.send(commandInvokedEvent('evt_after2'));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    try {
+      const auth = new FakeAuth();
+      const http = new FakeHttpClient(gateway.url);
+      const { socket, dispatched } = makeSocket(http, auth, {
+        hasHandler: () => false,
+        logger,
+      });
+      const controller = new AbortController();
+      const task = runUntilStopped(socket, controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_after2'));
+        expect(ok).toBe(true);
+        expect(gateway.state.acksFor(0)).toContain('evt_mj2');
+        expect(dispatched.map((e) => e.type)).toEqual(['command.invoked']); // member.joined never dispatched
+        expect(
+          records.some((r) => r.level === 'debug' && r.message.includes('member.joined')),
+        ).toBe(true);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('backlog.overflowed stays unacked even if a handler is registered for it', async () => {
+    const gateway = await startGateway(async (conn) => {
+      sendHello(conn);
+      conn.send(backlogOverflowedEvent('evt_bo1'));
+      conn.send(commandInvokedEvent('evt_after3'));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    try {
+      const auth = new FakeAuth();
+      const http = new FakeHttpClient(gateway.url);
+      const { socket, dispatched, problems } = makeSocket(http, auth, {
+        hasHandler: () => true, // even "yes" must not touch backlog.overflowed
+      });
+      const controller = new AbortController();
+      const task = runUntilStopped(socket, controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_after3'));
+        expect(ok).toBe(true);
+        expect(gateway.state.acksFor(0)).not.toContain('evt_bo1');
+        expect(dispatched.map((e) => e.type)).toEqual(['command.invoked']);
+        expect(problems).toHaveLength(1);
+        expect(problems[0]).toBeInstanceOf(Object);
       } finally {
         controller.abort();
         await task;

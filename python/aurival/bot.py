@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, overload
 
 import aiohttp
 
@@ -79,6 +80,7 @@ class Bot:
         quiet: bool = False,
     ) -> None:
         self._registered: dict[str, _Registered] = {}
+        self._event_handlers: dict[str, list[Handler]] = {}
         self._error_hook: ErrorHook | None = None
         self._log = logger or _log
         self._host = host
@@ -104,6 +106,64 @@ class Bot:
             return fn
 
         return decorate
+
+    # Types a handler registered through `on()` can never run for. Both are
+    # structural — routing this handler is not merely undocumented today, it
+    # is architecturally impossible — unlike `reaction.removed`, which is
+    # simply not a thing on the wire *yet* (AMENDMENT-04 A-2.1: un-reacting
+    # emits no event at all today). Refusing `reaction.removed` here would be
+    # a forward-compatibility trap: the day the server starts sending it,
+    # every bot that pre-registered a handler for it would need a new SDK
+    # release just to stop refusing what now works. `command.invoked` is
+    # routed elsewhere (`@bot.command`); `backlog.overflowed` never reaches a
+    # handler at all (SDK-28) — `Socket._handle_event` acks it before ever
+    # consulting `has_handler`.
+    _UNREGISTERABLE_EVENT_TYPES: ClassVar[dict[str, str]] = {
+        "command.invoked": "routed through @bot.command, not bot.on()",
+        "backlog.overflowed": "operational only — never reaches a handler (SDK-28)",
+    }
+
+    @overload
+    def on(self, event_type: str) -> Callable[[Handler], Handler]: ...
+
+    @overload
+    def on(self, event_type: str, fn: Handler) -> Handler: ...
+
+    def on(
+        self, event_type: str, fn: Handler | None = None
+    ) -> Handler | Callable[[Handler], Handler]:
+        """Register a handler for a generic event (`member.joined`,
+        `member.left`, `bot.added`, `bot.removed`, `reaction.added`, and any
+        future additive type) — as a decorator, `@bot.on("member.joined")`,
+        or a direct call, `bot.on("member.joined", fn)`. Distinct registry
+        from `@bot.command`; multiple handlers for the same type are all run,
+        in registration order. `command.invoked` itself is not routed
+        through here — use `@bot.command`.
+
+        Raises `AurivalError` at registration time for a type that can
+        NEVER run (see `_UNREGISTERABLE_EVENT_TYPES`) — a handler that
+        silently never fires is worse than one that fails loudly on
+        `run()`. A type that merely doesn't exist on the wire yet is not
+        refused: an event type this SDK doesn't recognize still builds a
+        `Context` opportunistically (see `Context.from_event`), so a handler
+        registered ahead of the server shipping it is forward-compatible,
+        not dead."""
+        reason = self._UNREGISTERABLE_EVENT_TYPES.get(event_type)
+        if reason is not None:
+            raise AurivalError(f"bot.on({event_type!r}, ...) can never run: {reason}")
+
+        if fn is not None:
+            self._event_handlers.setdefault(event_type, []).append(fn)
+            return fn
+
+        def decorate(inner: Handler) -> Handler:
+            self._event_handlers.setdefault(event_type, []).append(inner)
+            return inner
+
+        return decorate
+
+    def _has_event_handler(self, event_type: str) -> bool:
+        return bool(self._event_handlers.get(event_type))
 
     def on_error(self, fn: ErrorHook) -> ErrorHook:
         """Called with (error, context | None) for anything the SDK caught for you:
@@ -182,6 +242,7 @@ class Bot:
                     auth,
                     dispatch=self._dispatch,
                     on_problem=self._on_problem,
+                    has_handler=self._has_event_handler,
                     logger=self._log,
                     reporter=self._status,
                     bot_name=machine.bot,
@@ -321,36 +382,52 @@ class Bot:
     # -- dispatch ----------------------------------------------------------
 
     async def _dispatch(self, event: Event) -> None:
-        """One event. Runs the handler, never lets it take the bot down (SDK-16).
+        """One event. Runs the handler(s), never lets one take the bot down
+        (SDK-16). Only reached for `command.invoked` or a type this bot has a
+        generic handler for — `Socket` acks-and-ignores everything else itself.
 
         Note what is NOT in this frame: no key, no seed, no token. A crash
         reporter capturing locals here has nothing to capture.
         """
-        if event.type != "command.invoked":
-            return
         # The socket runs each handler in its own task; registering it here is what
         # lets shutdown wait for the ones still going (SDK-32).
         running = asyncio.current_task()
         if running is not None:
             self._inflight.add(running)
             running.add_done_callback(self._inflight.discard)
-        data = event.data
-        name = str(data.get("command", ""))
-        registered = self._registered.get(self._lookup_key(name))
-        if registered is None:
-            # The server routes by its own declared set, so this is a stale sync
-            # or a name we just removed. Not an error.
-            self._log.debug("no handler for command %r", name)
+
+        if event.type == "command.invoked":
+            data = event.data
+            name = str(data.get("command", ""))
+            registered = self._registered.get(self._lookup_key(name))
+            if registered is None:
+                # The server routes by its own declared set, so this is a stale
+                # sync or a name we just removed. Not an error.
+                self._log.debug("no handler for command %r", name)
+                return
+
+            assert self._http is not None
+            ctx = Context.from_event(event, http=self._http)
+            try:
+                await registered.handler(ctx)
+            # One bad command must not take the bot offline (SDK-16).
+            except Exception as exc:
+                self._log.exception("handler for %r raised", name)
+                await self._call_error_hook(exc, ctx)
             return
 
+        handlers = self._event_handlers.get(event.type)
+        if not handlers:
+            return
         assert self._http is not None
         ctx = Context.from_event(event, http=self._http)
-        try:
-            await registered.handler(ctx)
-        # One bad command must not take the bot offline (SDK-16).
-        except Exception as exc:
-            self._log.exception("handler for %r raised", name)
-            await self._call_error_hook(exc, ctx)
+        for handler in handlers:
+            try:
+                await handler(ctx)
+            # Same rule as a command handler: one bad handler is not an outage.
+            except Exception as exc:
+                self._log.exception("handler for event %r raised", event.type)
+                await self._call_error_hook(exc, ctx)
 
     def _on_problem(self, error: AurivalAPIError | Event) -> None:
         task = asyncio.create_task(self._call_error_hook(error, None))

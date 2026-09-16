@@ -47,6 +47,9 @@ from .errors import (
     InvalidRequestError,
     KeyAlreadyPaired,
     KeyRevoked,
+    MentionNotMember,
+    MentionTokenMissing,
+    MessageNotYours,
     NotFound,
     PairRateLimited,
     ParameterInvalid,
@@ -55,6 +58,7 @@ from .errors import (
     ProtocolError,
     RateLimited,
     RateLimitError,
+    ReactionEmojiTooLong,
     ServerRestarting,
     SessionSuperseded,
     SyncRateLimited,
@@ -65,10 +69,10 @@ from .errors import (
     UnknownParameter,
     from_envelope,
 )
-from .events import Chat, Command, Context, Event, Message, User
+from .events import Chat, Command, Context, Event, MemberPage, Mention, Message, User, mention
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.1.8"
+__version__ = "0.2.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -111,7 +115,12 @@ __all__ = [
     "InvalidRequestError",
     "KeyAlreadyPaired",
     "KeyRevoked",
+    "MemberPage",
+    "Mention",
+    "MentionNotMember",
+    "MentionTokenMissing",
     "Message",
+    "MessageNotYours",
     "NotFound",
     "PairRateLimited",
     "ParameterInvalid",
@@ -120,6 +129,7 @@ __all__ = [
     "ProtocolError",
     "RateLimitError",
     "RateLimited",
+    "ReactionEmojiTooLong",
     "ServerRestarting",
     "SessionSuperseded",
     "SyncRateLimited",
@@ -132,4 +142,5 @@ __all__ = [
     "__version__",
     "action_for_bye",
     "from_envelope",
+    "mention",
 ]

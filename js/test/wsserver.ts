@@ -136,13 +136,26 @@ export interface GatewayServer {
   close(): Promise<void>;
 }
 
-/** Runs `script` once per accepted connection against a real websocket handshake. */
-export async function startGateway(script: Script): Promise<GatewayServer> {
+/**
+ * Runs `script` once per accepted connection against a real websocket
+ * handshake. `httpHandler`, when given, answers plain (non-upgrade) HTTP
+ * requests on the same port instead of the default bare 404 — for tests
+ * that need one server to be both the gateway AND the REST API (token
+ * exchange, command sync) a real `Bot.start()` talks to before it ever
+ * dials the socket.
+ */
+export async function startGateway(
+  script: Script,
+  httpHandler?: (req: IncomingMessage, res: import('node:http').ServerResponse) => void,
+): Promise<GatewayServer> {
   const state = new ServerState();
-  const server: Server = createServer((_req, res) => {
-    res.writeHead(404);
-    res.end();
-  });
+  const server: Server = createServer(
+    httpHandler ??
+      ((_req, res) => {
+        res.writeHead(404);
+        res.end();
+      }),
+  );
   server.on('clientError', (_err, socket) => socket.destroy());
 
   server.on('upgrade', (req: IncomingMessage, socket: NetSocket, head: Buffer) => {
@@ -356,6 +369,25 @@ export function backlogOverflowedEvent(eventId = 'evt_bo'): Record<string, unkno
       created_at: '2026-01-01T00:00:00Z',
       sequence: 0,
       data: { dropped_count: 5, resume_sequence: 42 },
+    },
+  };
+}
+
+/** A `member.joined` frame (CONTRACT-V1 §3.1) — the stand-in for "some
+ * non-command.invoked event type" across the generic-dispatch tests. */
+export function memberJoinedEvent(eventId: string, sequence = 1): Record<string, unknown> {
+  return {
+    op: 'event',
+    d: {
+      object: 'event',
+      id: eventId,
+      type: 'member.joined',
+      created_at: '2026-01-01T00:00:00Z',
+      sequence,
+      data: {
+        chat: { object: 'chat', id: 'chat_1', type: 'group', name: null, member_count: 5 },
+        user: { object: 'user', id: 'user_2', handle: 'newbie', name: 'Newbie' },
+      },
     },
   };
 }

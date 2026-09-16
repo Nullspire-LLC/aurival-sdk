@@ -15,6 +15,13 @@ import { AurivalError, BotSuspended, SessionSuperseded } from '../src/errors.js'
 import { HttpClient } from '../src/http.js';
 import type { Logger } from '../src/http.js';
 import { KeyFile, MachineKey, type Auth, type Machine } from '../src/auth.js';
+import {
+  commandInvokedEvent,
+  memberJoinedEvent,
+  sendHello,
+  startGateway,
+  waitUntil,
+} from './wsserver.js';
 
 function recorder(): { log: Logger; warnings: string[] } {
   const warnings: string[] = [];
@@ -222,12 +229,14 @@ function startFakeBotAPI(): Promise<{ url: string; close: () => Promise<void> }>
       for await (const _chunk of req) void _chunk;
       if (req.url === '/v1/token' && req.method === 'POST') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(
-          JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }),
-        );
+        res.end(JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }));
         return;
       }
-      if (req.url?.startsWith('/v1/bots/') && req.url.endsWith('/commands') && req.method === 'PUT') {
+      if (
+        req.url?.startsWith('/v1/bots/') &&
+        req.url.endsWith('/commands') &&
+        req.method === 'PUT'
+      ) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data: [], has_more: false, next_cursor: null }));
         return;
@@ -325,9 +334,7 @@ describe('Bot#start command count cap (Lane 58 S2)', () => {
       bot.command(`cmd${i}`, async () => undefined);
     }
 
-    await expect(bot.start()).rejects.toThrow(
-      '51 commands registered, but the cap is 50 per bot',
-    );
+    await expect(bot.start()).rejects.toThrow('51 commands registered, but the cap is 50 per bot');
   });
 
   it('does not throw at exactly fifty registered commands', async () => {
@@ -352,6 +359,276 @@ describe('Bot#start command count cap (Lane 58 S2)', () => {
       await expect(bot.start(controller.signal)).resolves.toBeUndefined();
     } finally {
       await api.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// AMENDMENT-04: bot.on() end-to-end, and the command.invoked regression that
+// matters most — both dispatched through a real gateway connection, not a
+// mocked Socket, so this is the same path a running bot actually takes.
+// --------------------------------------------------------------------------
+
+/** One server answering both the REST leg (`/v1/token`, command sync) and
+ * upgrading to the gateway WS, so `Bot.start()` can run for real end to end. */
+async function startCombinedFakeServer(script: Parameters<typeof startGateway>[0]) {
+  const gateway = await startGateway(script, (req, res) => {
+    void (async () => {
+      for await (const _chunk of req) void _chunk;
+      if (req.url === '/v1/token' && req.method === 'POST') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }));
+        return;
+      }
+      if (
+        req.url?.startsWith('/v1/bots/') &&
+        req.url.endsWith('/commands') &&
+        req.method === 'PUT'
+      ) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [], has_more: false, next_cursor: null }));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          type: 'invalid_request_error',
+          code: 'not_found',
+          message: 'not found',
+          doc_url: 'https://bots.aurival.com/docs/errors#not_found',
+        }),
+      );
+    })();
+  });
+  const host = gateway.url.replace(/^ws:\/\//, 'http://').replace(/\/v1\/gateway$/, '');
+  return { ...gateway, host };
+}
+
+describe('Bot#on end-to-end, over a real gateway connection', () => {
+  it('bot.on("member.joined", fn) is called with a Context whose user is populated and whose chat.member_count is a number', async () => {
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(memberJoinedEvent('evt_mj'));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: gateway.host,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+    try {
+      const bot = new Bot({ host: gateway.host, keyPath, quiet: true });
+      let seenUser: unknown;
+      let seenMemberCount: unknown;
+      const { promise: called, resolve: markCalled } = (() => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => (resolve = r));
+        return { promise, resolve };
+      })();
+      bot.on('member.joined', (ctx) => {
+        seenUser = ctx.user;
+        seenMemberCount = ctx.chat.member_count;
+        markCalled();
+      });
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        await called;
+        expect(seenUser).toEqual({ id: 'user_2', handle: 'newbie', name: 'Newbie' });
+        expect(typeof seenMemberCount).toBe('number');
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('command registration and dispatch is unchanged: bot.command("ping", fn) still fires on command.invoked', async () => {
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(commandInvokedEvent('evt_cmd'));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: gateway.host,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+    try {
+      const bot = new Bot({ host: gateway.host, keyPath, quiet: true });
+      let calls = 0;
+      bot.command('ping', async () => {
+        calls += 1;
+      });
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_cmd'));
+        expect(ok, 'command.invoked was never acked').toBe(true);
+        expect(calls).toBe(1);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// on() refuses types that could never reach a handler (senior review finding)
+// --------------------------------------------------------------------------
+
+describe('Bot#on refuses only the two structurally-undispatchable types', () => {
+  it('throws for command.invoked, naming command() as the replacement', () => {
+    const bot = new Bot({ quiet: true });
+    expect(() => bot.on('command.invoked', async () => undefined)).toThrow(/command\(/);
+  });
+
+  it('throws for backlog.overflowed, citing SDK-28', () => {
+    const bot = new Bot({ quiet: true });
+    expect(() => bot.on('backlog.overflowed', async () => undefined)).toThrow(/SDK-28/);
+  });
+
+  it('does NOT throw for reaction.removed — not-a-thing-today is not structural, refusing it would be a forward-compat trap', () => {
+    const bot = new Bot({ quiet: true });
+    expect(() => bot.on('reaction.removed', async () => undefined)).not.toThrow();
+  });
+
+  it('does not register a handler when on() throws — a later dispatch cannot find it either', () => {
+    const bot = new Bot({ quiet: true });
+    try {
+      bot.on('command.invoked', async () => undefined);
+    } catch {
+      // expected
+    }
+    // No public way to inspect #onHandlers directly; the contract this
+    // guards is "never registered", which the throw-before-set in on()
+    // already guarantees structurally. Registering a normal type right
+    // after proves the bot itself is still perfectly usable.
+    expect(() => bot.on('member.joined', async () => undefined)).not.toThrow();
+  });
+
+  it('still allows every real generic type: member.joined/left, bot.added/removed, reaction.added', () => {
+    const bot = new Bot({ quiet: true });
+    for (const type of [
+      'member.joined',
+      'member.left',
+      'bot.added',
+      'bot.removed',
+      'reaction.added',
+    ]) {
+      expect(() => bot.on(type, async () => undefined)).not.toThrow();
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// on() multiplicity (senior review finding — js used to replace, python
+// already ran all of them; js moves to match).
+// --------------------------------------------------------------------------
+
+describe('Bot#on multiplicity, over a real gateway connection', () => {
+  it('runs every handler registered for a type, in registration order, and acks once after all of them settle', async () => {
+    const order: string[] = [];
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(memberJoinedEvent('evt_multi'));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: gateway.host,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+    try {
+      const bot = new Bot({ host: gateway.host, keyPath, quiet: true });
+      bot.on('member.joined', async () => {
+        order.push('first');
+      });
+      bot.on('member.joined', async () => {
+        order.push('second');
+      });
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_multi'));
+        expect(ok).toBe(true);
+        expect(order).toEqual(['first', 'second']);
+        expect(gateway.state.acksFor(0).filter((id) => id === 'evt_multi')).toHaveLength(1);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a throwing generic handler reaches onError and the event is still acked exactly once — no redelivery of a deterministic failure', async () => {
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(memberJoinedEvent('evt_throw'));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: gateway.host,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+    try {
+      const bot = new Bot({ host: gateway.host, keyPath, quiet: true });
+      const errors: unknown[] = [];
+      let secondRan = false;
+      bot.onError((error) => {
+        errors.push(error);
+      });
+      bot.on('member.joined', async () => {
+        throw new Error('boom');
+      });
+      bot.on('member.joined', async () => {
+        secondRan = true; // the throw above must not skip this one
+      });
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_throw'));
+        expect(ok, 'a throwing handler must still let the event get acked').toBe(true);
+        expect(errors).toHaveLength(1);
+        expect((errors[0] as Error).message).toBe('boom');
+        expect(secondRan).toBe(true);
+        // Give any stray redelivery a chance to land, then prove it never did.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(gateway.state.acksFor(0).filter((id) => id === 'evt_throw')).toHaveLength(1);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

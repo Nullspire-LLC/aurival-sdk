@@ -102,8 +102,31 @@ export class AckUnknownEvent extends InvalidRequestError {}
  */
 export class TooManyProblems extends InvalidRequestError {}
 
+/**
+ * `reaction_emoji_too_long` — the emoji argument to `react()`/`unreact()`
+ * exceeded the server's >32-byte length clamp (AMENDMENT-04 A-2). This is a
+ * size limit, not an allowlist check — there is no disallowed-emoji list to
+ * go looking for; any emoji under the byte clamp is accepted.
+ */
+export class ReactionEmojiTooLong extends InvalidRequestError {}
+
+/**
+ * `mention_not_member` — a `mentions` entry named a user id that is not a
+ * member of the target chat. Deliberately indistinguishable from a
+ * nonexistent user id (AMENDMENT-04 A-4, R-8): both answer with this same
+ * code, so the response can never be used as an existence oracle for a
+ * user id the caller does not already know is valid.
+ */
+export class MentionNotMember extends InvalidRequestError {}
+
+/** `mention_token_missing` — a `mentions` entry's `@handle` never appeared in `text`. */
+export class MentionTokenMissing extends InvalidRequestError {}
+
 export class BotSuspended extends PermissionDeniedError {}
 export class BotPlaygroundOnly extends PermissionDeniedError {}
+
+/** `message_not_yours` — 403, `edit()`/`delete()` only work on the bot's own messages. */
+export class MessageNotYours extends PermissionDeniedError {}
 
 export class RateLimited extends RateLimitError {}
 export class PairRateLimited extends RateLimitError {}
@@ -160,6 +183,10 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   unknown_operation: UnknownOperation,
   ack_unknown_event: AckUnknownEvent,
   too_many_problems: TooManyProblems,
+  reaction_emoji_too_long: ReactionEmojiTooLong,
+  mention_not_member: MentionNotMember,
+  mention_token_missing: MentionTokenMissing,
+  message_not_yours: MessageNotYours,
 };
 
 export interface FromEnvelopeOptions {

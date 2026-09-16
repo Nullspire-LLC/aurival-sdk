@@ -167,6 +167,22 @@ export class HttpClient {
         throw new errors.TransportError(detail);
       }
 
+      // 204 + an empty body decodes to `{}` — several new mutating routes
+      // (typing, reactions, delete) answer this way. A 204 that (against
+      // spec) carries a JSON body decodes it rather than silently dropping
+      // it, gating on the body being empty rather than on status alone —
+      // mirrors http.py's identical rule (merge-gate senior review). In
+      // practice `raw` is ALWAYS '' here: the WHATWG fetch spec forces a
+      // null body for every 204/205/304 response, so `resp.text()` above
+      // already discarded whatever bytes the server actually sent before
+      // this line runs (verified against Node's own `fetch`). This branch
+      // stays correct for whatever `raw` it is given regardless — python's
+      // http.py reads raw socket bytes and is not subject to this
+      // fetch-specific stripping, so the decode path is live there. An empty
+      // 200 (or any other non-204 success) is still a ProtocolError: every
+      // other status decodes unconditionally, so an empty body only becomes
+      // {} through the 204 branch, exactly as before this change.
+      if (status === 204) return raw === '' ? {} : decodeObject(raw);
       if (status < 400) return decodeObject(raw);
 
       const envelope = decodeObject(raw);
@@ -220,10 +236,51 @@ export class HttpClient {
     text: string,
     idempotencyKey: string,
     replyTo?: string | null,
+    mentions?: Array<{ user: string }>,
   ): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = { chat, text };
     if (replyTo != null && replyTo !== '') body['reply_to'] = replyTo;
+    if (mentions !== undefined && mentions.length > 0) body['mentions'] = mentions;
     return this.request('POST', '/v1/messages', { body, idempotencyKey });
+  }
+
+  /** `POST .../typing` body is `{"is_typing": true|false}` — never `state`. */
+  async setTyping(chat: string, isTyping: boolean): Promise<void> {
+    await this.request('POST', `/v1/chats/${chat}/typing`, {
+      body: { is_typing: isTyping },
+      idempotencyKey: randomUUID(),
+    });
+  }
+
+  async editMessage(message: string, text: string): Promise<Record<string, unknown>> {
+    return this.request('PATCH', `/v1/messages/${message}`, {
+      body: { text },
+      idempotencyKey: randomUUID(),
+    });
+  }
+
+  async deleteMessage(message: string): Promise<void> {
+    await this.request('DELETE', `/v1/messages/${message}`, { idempotencyKey: randomUUID() });
+  }
+
+  /** The emoji is percent-encoded — it travels in the path, not the body. */
+  async setReaction(message: string, emoji: string): Promise<void> {
+    await this.request('PUT', `/v1/messages/${message}/reactions/${encodeURIComponent(emoji)}`, {
+      idempotencyKey: randomUUID(),
+    });
+  }
+
+  async unsetReaction(message: string, emoji: string): Promise<void> {
+    await this.request('DELETE', `/v1/messages/${message}/reactions/${encodeURIComponent(emoji)}`, {
+      idempotencyKey: randomUUID(),
+    });
+  }
+
+  /** GET, so no idempotency key — reads are never retried-as-a-write. */
+  async listMembers(chat: string, cursor?: string): Promise<Record<string, unknown>> {
+    const query =
+      cursor !== undefined && cursor !== '' ? `?cursor=${encodeURIComponent(cursor)}` : '';
+    return this.request('GET', `/v1/chats/${chat}/members${query}`);
   }
 
   async syncCommands(

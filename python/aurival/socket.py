@@ -108,6 +108,12 @@ class Socket:
         *,
         dispatch: Callable[[Event], Awaitable[None]],
         on_problem: Callable[[AurivalAPIError | Event], None],
+        # The narrow seam through which the socket learns whether `Bot` has a
+        # generic handler for some non-`command.invoked` event type — never by
+        # importing `Bot`. Defaults to "nothing registered", so a caller that
+        # never passes it (every pre-existing test) keeps today's ack-and-ignore
+        # behaviour for every type but `command.invoked` (R2b).
+        has_handler: Callable[[str], bool] = lambda event_type: False,
         logger: logging.Logger | None = None,
         seen_limit: int = 10_000,
         # Injectable backoff seam — same code path production uses, just with
@@ -137,6 +143,7 @@ class Socket:
         self._auth = auth
         self._dispatch = dispatch
         self._on_problem = on_problem
+        self._has_handler = has_handler
         self._logger = logger or logging.getLogger("aurival")
         self._seen_limit = seen_limit
         self._seen: dict[str, None] = {}
@@ -433,11 +440,12 @@ class Socket:
             self._mark_seen(event.id)
             return
 
-        if event.type != EVENT_COMMAND_INVOKED:
-            # Unknown event type: ignored, never fatal (CONTRACT-V1 §3, §9) —
-            # the first additive type must not break the fleet. Unlike
-            # backlog.overflowed this is presumed durable, so it is acked to
-            # keep the stream moving rather than redelivered forever.
+        if event.type != EVENT_COMMAND_INVOKED and not self._has_handler(event.type):
+            # Unknown event type, or one this bot registered nothing for:
+            # ignored, never fatal (CONTRACT-V1 §3, §9) — the first additive
+            # type must not break the fleet. Unlike backlog.overflowed this is
+            # presumed durable, so it is acked to keep the stream moving
+            # rather than redelivered forever.
             self._logger.debug("ignoring unknown event type %r", event.type)
             self._mark_seen(event.id)
             await self._ack(ws, event.id, generation)

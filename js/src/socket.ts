@@ -76,6 +76,13 @@ export function actionForBye(code: string, errorType: string): ByeAction {
 export interface SocketOptions {
   dispatch: (event: Event) => Promise<void>;
   onProblem: (problem: AurivalAPIError | Event) => void;
+  /**
+   * The narrow seam onto `Bot`'s registry (R2): true if the bot has a
+   * handler registered for this event `type`, beyond `command.invoked` which
+   * `Socket` always dispatches on its own. Defaults to "no generic handlers"
+   * so an omitted option keeps today's ack-and-ignore behaviour exactly.
+   */
+  hasHandler?: ((type: string) => boolean) | undefined;
   logger?: Logger | undefined;
   seenLimit?: number | undefined;
   backoffBase?: number | undefined;
@@ -183,6 +190,7 @@ export class Socket {
   readonly #auth: Auth;
   readonly #dispatch: (event: Event) => Promise<void>;
   readonly #onProblem: (problem: AurivalAPIError | Event) => void;
+  readonly #hasHandler: (type: string) => boolean;
   readonly #logger: Logger;
   readonly #seenLimit: number;
   readonly #backoffBase: number;
@@ -216,6 +224,7 @@ export class Socket {
     this.#auth = auth;
     this.#dispatch = options.dispatch;
     this.#onProblem = options.onProblem;
+    this.#hasHandler = options.hasHandler ?? (() => false);
     this.#logger = options.logger ?? defaultLogger();
     this.#seenLimit = options.seenLimit ?? 10_000;
     this.#backoffBase = options.backoffBase ?? 1;
@@ -573,11 +582,11 @@ export class Socket {
       return;
     }
 
-    if (event.type !== EVENT_COMMAND_INVOKED) {
-      // Unknown event type: ignored, never fatal — the first additive type
-      // must not break the fleet. Unlike `backlog.overflowed` this is
-      // presumed durable, so it is acked to keep the stream moving rather
-      // than redelivered forever (SDK-40).
+    if (event.type !== EVENT_COMMAND_INVOKED && !this.#hasHandler(event.type)) {
+      // No registered handler for this type (command or generic): ignored,
+      // never fatal — the first additive type must not break the fleet.
+      // Unlike `backlog.overflowed` this is presumed durable, so it is acked
+      // to keep the stream moving rather than redelivered forever (SDK-40).
       this.#logger.debug(`ignoring unknown event type ${event.type}`);
       this.#markSeen(event.id);
       await this.#ack(ws, event.id, generation);

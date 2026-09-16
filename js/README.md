@@ -103,6 +103,128 @@ the server (your socket stays open), and a `backlog.overflowed` event telling yo
 events you missed while you were away and where delivery resumed. Neither reaches a
 command handler.
 
+## Other events
+
+`bot.command()` is for `/slash` invocations. Everything else the server can tell you about
+goes through `bot.on(type, fn)`:
+
+```ts
+bot.on('member.joined', async (ctx) => {
+  await ctx.send(ctx.chat.id, `welcome, ${ctx.user?.handle}`);
+});
+
+bot.on('member.left', async (ctx) => {
+  console.log(ctx.user?.handle, 'left', ctx.chat.id);
+});
+
+bot.on('bot.added', async (ctx) => {
+  await ctx.send(ctx.chat.id, `thanks for adding me, ${ctx.actor?.handle}`);
+});
+
+bot.on('bot.removed', async (ctx) => {
+  console.log(ctx.actor?.handle, 'removed me from', ctx.chat.id);
+});
+
+bot.on('reaction.added', async (ctx) => {
+  console.log(ctx.sender?.handle, 'reacted', ctx.emoji, 'on', ctx.message?.id);
+});
+```
+
+One `Context` for every event type. Only the fields that event actually carries are
+populated — everything else is `null`:
+
+| event             | `ctx.chat` | `ctx.sender` | `ctx.user` | `ctx.actor` | `ctx.message` | `ctx.emoji` |
+| ----------------- | ---------- | ------------ | ---------- | ----------- | ------------- | ----------- |
+| `command.invoked` | ✓          | ✓            |            |             | ✓             |             |
+| `member.joined`   | ✓          |              | ✓          |             |               |             |
+| `member.left`     | ✓          |              | ✓          |             |               |             |
+| `bot.added`       | ✓          |              |            | ✓           |               |             |
+| `bot.removed`     | ✓          |              |            | ✓           |               |             |
+| `reaction.added`  | ✓          | ✓            |            |             | ✓             | ✓           |
+
+An event type this SDK does not know about yet is never fatal — `bot.on()` a type the
+server hasn't invented yet and, if it starts sending it, the handler runs with whatever
+fields it happens to carry. There is no `reaction.removed` event: un-reacting is silent.
+
+## Actions
+
+Every action is available on a handler's `ctx`. `ctx.chat.member_count` carries the chat's
+live participant count, so you don't need a separate call to know how many people are in it:
+
+```ts
+bot.command('busy', async (ctx) => {
+  await ctx.withTyping(async () => {
+    // ... slow work, e.g. calling out to another service ...
+    await ctx.reply(`done, and there are ${ctx.chat.member_count} of us in here`);
+  });
+});
+
+bot.command('fix', async (ctx) => {
+  const sent = await ctx.reply('working on it...');
+  await ctx.edit(String(sent['id']), 'done!');
+});
+
+bot.command('oops', async (ctx) => {
+  if (ctx.message) await ctx.delete(ctx.message);
+});
+
+bot.command('upvote', async (ctx) => {
+  if (ctx.message) await ctx.react(ctx.message, '\u{1F44D}');
+});
+
+bot.command('downvote', async (ctx) => {
+  if (ctx.message) await ctx.unreact(ctx.message, '\u{1F44D}');
+});
+
+bot.command('roster', async (ctx) => {
+  // One page per call — never auto-loads the rest. Loop on `hasMore`, never
+  // on whether `nextCursor` looks truthy: `hasMore` is the explicit signal
+  // (CONTRACT-V1 §4), and inferring "more pages" from the cursor is exactly
+  // the off-by-one every other SDK ships.
+  const handles: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await ctx.members(undefined, { cursor });
+    handles.push(...page.users.map((u) => u.handle));
+    if (!page.hasMore) break;
+    cursor = page.nextCursor ?? undefined;
+  }
+  await ctx.reply(handles.join(', '));
+});
+```
+
+`ctx.typing(true | false)` and `ctx.withTyping(fn)` toggle the typing indicator — `withTyping`
+sends `true` on entry and `false` on exit, always, even if `fn` throws.
+
+`@`-mention someone with `mention(user)` — it template-literals straight into `text` as
+`@handle`, and carries the id the server needs in `mentions`:
+
+```ts
+import { mention } from 'aurival';
+
+bot.command('thanks', async (ctx) => {
+  if (!ctx.sender) return; // no sender on this event type — nothing to thank
+  await ctx.send(ctx.chat, `thanks, ${mention(ctx.sender)}!`, {
+    mentions: [mention(ctx.sender)],
+  });
+});
+```
+
+> **0.2.0 breaking change:** `ctx.sender` is now `User | null` (was `User`). The single
+> `Context` class is shared across every event type, and `sender` is genuinely absent on
+> `member.joined`/`member.left`/`bot.added`/`bot.removed` (see the table above) — so it can
+> no longer be typed as always-present. Narrow it before use:
+>
+> ```ts
+> // 0.1.x — ctx.sender.handle compiled unconditionally.
+> console.log(ctx.sender.handle);
+>
+> // 0.2.0 — narrow first (an early return, as in the `thanks` example above,
+> // or an `if (ctx.sender)` guard around the rest of the handler).
+> if (!ctx.sender) return;
+> console.log(ctx.sender.handle);
+> ```
+
 ## Shadowed commands
 
 A bot can declare up to 50 commands, the SDK refuses to connect past that.
@@ -163,7 +285,7 @@ and "zero runtime dependencies" could not both be true.
 
 ```
 $ npm ls --omit=dev
-aurival@0.1.8
+aurival@0.2.0
 └── (empty)
 ```
 

@@ -51,6 +51,9 @@ export {
   InvalidRequestError,
   KeyAlreadyPaired,
   KeyRevoked,
+  MentionNotMember,
+  MentionTokenMissing,
+  MessageNotYours,
   NotFound,
   PairRateLimited,
   ParameterInvalid,
@@ -59,6 +62,7 @@ export {
   ProtocolError,
   RateLimitError,
   RateLimited,
+  ReactionEmojiTooLong,
   ServerRestarting,
   SessionSuperseded,
   SyncRateLimited,
@@ -70,8 +74,8 @@ export {
   UnknownParameter,
   fromEnvelope,
 } from './errors.js';
-export { Context, Event } from './events.js';
-export type { Chat, Command, Message, User } from './events.js';
+export { Context, Event, Mention, mention } from './events.js';
+export type { Chat, Command, MemberPage, Message, MentionLike, User } from './events.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 
-export const version = '0.1.8';
+export const version = '0.2.0';

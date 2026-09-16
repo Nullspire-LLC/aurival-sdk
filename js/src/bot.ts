@@ -7,8 +7,21 @@ import { Context, Event } from './events.js';
 import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
 import type { Command } from './events.js';
 import type { Logger } from './http.js';
-import { Socket } from './socket.js';
+import { EVENT_BACKLOG_OVERFLOWED, EVENT_COMMAND_INVOKED, Socket } from './socket.js';
 import * as status from './status.js';
+
+/** Types `on()` refuses, and why — each is a STRUCTURAL case where a
+ * registered handler truly cannot ever run, which is exactly the silent
+ * footgun `on()` throwing here saves a developer from. `reaction.removed`
+ * used to be refused here too, but it is merely not-a-thing-today rather
+ * than structurally undispatchable — refusing it was a forward-compatibility
+ * trap (merge-gate senior review; python makes the identical change), so
+ * `on('reaction.removed', ...)` now registers like any other unrecognized
+ * type: it just never fires until/unless the wire ever adds that event. */
+const NEVER_DISPATCHED_TO_ON: ReadonlyMap<string, string> = new Map([
+  [EVENT_COMMAND_INVOKED, 'routed through bot.command(), not bot.on()'],
+  [EVENT_BACKLOG_OVERFLOWED, 'operational only — never reaches a handler (SDK-28)'],
+]);
 
 export type Handler = (ctx: Context) => Promise<void> | void;
 
@@ -121,6 +134,15 @@ export function reportConflicts(response: Record<string, unknown>, log: Logger):
  */
 export class Bot {
   readonly #registered = new Map<string, Registered>();
+  /**
+   * `bot.on(type, fn)` — a generic string-keyed registry beside the command
+   * registry (R1). `command.invoked` never lands here; it stays on
+   * `#registered` and its dispatch is unchanged. Many handlers per type,
+   * kept in registration order (matches python's `on()` — a divergence
+   * caught in review; js used to be one-handler-per-type and silently
+   * replace, python already ran all of them).
+   */
+  readonly #onHandlers = new Map<string, Handler[]>();
   readonly #inflight = new Set<Promise<void>>();
   readonly #log: Logger;
   readonly #host: string | undefined;
@@ -151,6 +173,35 @@ export class Bot {
     const key = lookupKey(name);
     if (this.#registered.has(key)) status.duplicateCommand(name, this.#quiet);
     this.#registered.set(key, { command: { name, description }, handler });
+  }
+
+  /**
+   * Register a handler for any event type other than `command.invoked` (use
+   * `command()` for that) — `member.joined`, `member.left`, `bot.added`,
+   * `bot.removed`, `reaction.added`, or a future type this SDK does not yet
+   * name. Many handlers may share one type; each runs in the order it was
+   * registered (matches python), and the event is acked once, after every
+   * handler for it has settled.
+   *
+   * Throws immediately, before any registration, for the two types that are
+   * STRUCTURALLY undispatchable through `on()`: `command.invoked` (never
+   * dispatched here — use `command()`) and `backlog.overflowed` (never
+   * dispatched to any handler, by contract). A handler that truly can never
+   * run is exactly the silent footgun this check exists to catch at
+   * registration time. `reaction.removed` is NOT refused: it does not exist
+   * on the wire today (AMENDMENT-04 A-2.1, un-reacting is silent), but that
+   * is a today-fact, not a structural one, and refusing a type merely
+   * because the wire hasn't sent it yet would be a forward-compatibility
+   * trap — the handler just never fires until/unless that changes.
+   */
+  on(type: string, handler: Handler): void {
+    const reason = NEVER_DISPATCHED_TO_ON.get(type);
+    if (reason !== undefined) {
+      throw new AurivalError(`bot.on(${JSON.stringify(type)}, ...) can never run: ${reason}`);
+    }
+    const handlers = this.#onHandlers.get(type);
+    if (handlers === undefined) this.#onHandlers.set(type, [handler]);
+    else handlers.push(handler);
   }
 
   /**
@@ -222,6 +273,7 @@ export class Bot {
       onProblem: (problem) => {
         void this.#callErrorHook(problem, null);
       },
+      hasHandler: (type) => this.#onHandlers.has(type),
       logger: this.#log,
       botName: machine.bot,
       commandCount: this.#registered.size,
@@ -324,7 +376,14 @@ export class Bot {
    * Note what is NOT in this frame: no key, no seed, no token.
    */
   async #handle(event: Event): Promise<void> {
-    if (event.type !== 'command.invoked') return;
+    if (event.type === 'command.invoked') {
+      await this.#handleCommand(event);
+      return;
+    }
+    await this.#handleGeneric(event);
+  }
+
+  async #handleCommand(event: Event): Promise<void> {
     const name = typeof event.data['command'] === 'string' ? event.data['command'] : '';
     const registered = this.#registered.get(lookupKey(name));
     if (registered === undefined) {
@@ -343,6 +402,40 @@ export class Bot {
         `handler for ${JSON.stringify(name)} threw: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
       );
       await this.#callErrorHook(exc, ctx);
+    }
+  }
+
+  /**
+   * `member.joined`/`left`, `bot.added`/`removed`, `reaction.added`, or any
+   * other type this bot registered via `on()`. `Socket` only dispatches
+   * here for a type `#hasHandler` said yes to, but this stays defensive.
+   *
+   * Every handler registered for this type runs, in registration order
+   * (R1/python parity) — one throwing does not skip the rest. `Socket` acks
+   * the event exactly once, after this whole method returns, regardless of
+   * how many handlers ran or how many of them threw: a crash never
+   * redelivers a deterministic failure into a loop (SDK-16 extended to the
+   * multi-handler case).
+   */
+  async #handleGeneric(event: Event): Promise<void> {
+    const handlers = this.#onHandlers.get(event.type);
+    if (handlers === undefined || handlers.length === 0) {
+      this.#log.debug(`no handler for event type ${JSON.stringify(event.type)}`);
+      return;
+    }
+    if (this.#http === null) return;
+    const ctx = Context.fromGenericEvent(event, this.#http);
+    for (const handler of handlers) {
+      try {
+        await handler(ctx);
+      } catch (exc) {
+        // One bad handler must not take the bot offline (SDK-16), same as a
+        // command, and must not stop the other handlers for this event.
+        this.#log.error(
+          `handler for ${JSON.stringify(event.type)} threw: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
+        );
+        await this.#callErrorHook(exc, ctx);
+      }
     }
   }
 

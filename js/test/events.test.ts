@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Context, Event } from '../src/events.js';
+import { Context, Event, Mention, mention } from '../src/events.js';
+import * as errors from '../src/errors.js';
 import { HttpClient } from '../src/http.js';
 import type { Auth } from '../src/auth.js';
 
@@ -158,7 +159,7 @@ describe('Context.fromEvent', () => {
     const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
     expect(ctx.command).toBe('ping');
     expect(ctx.arguments).toBe('pong please');
-    expect(ctx.chat).toEqual({ id: 'chat_1', type: 'dm', name: null });
+    expect(ctx.chat).toEqual({ id: 'chat_1', type: 'dm', name: null, member_count: null });
     expect(ctx.sender).toEqual({ id: 'user_1', handle: 'gustav', name: 'Gustav' });
     expect(ctx.event).toBe(event);
   });
@@ -420,5 +421,401 @@ describe('Context does not expose its HttpClient', () => {
     const dump = inspect(ctx, { depth: 10, showHidden: true });
     expect(dump).not.toMatch(/tok-1/);
     expect(dump).not.toContain('HttpClient');
+  });
+});
+
+// --------------------------------------------------------------------------
+// AMENDMENT-04: chat.member_count, Context.fromGenericEvent, Mention, actions
+// --------------------------------------------------------------------------
+
+function makeGenericEvent(type: string, data: Record<string, unknown>): Event {
+  return Event.fromFrame({
+    id: 'evt_g1',
+    type,
+    created_at: '2026-09-16T00:00:00Z',
+    sequence: 1,
+    data,
+  });
+}
+
+describe('Chat.member_count', () => {
+  it('is a number when the wire frame carries it', () => {
+    const event = makeInvokedEvent({
+      command: 'ping',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null, member_count: 3 },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+    });
+    const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
+    expect(ctx.chat.member_count).toBe(3);
+  });
+
+  it('is null, never defaulted to 0, when the wire frame omits it', () => {
+    const event = makeInvokedEvent({
+      command: 'ping',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+    });
+    const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
+    expect(ctx.chat.member_count).toBeNull();
+    expect('member_count' in ctx.chat).toBe(true);
+  });
+});
+
+describe('Context.fromGenericEvent', () => {
+  const http = new HttpClient('http://example.invalid');
+
+  it('member.joined populates chat and user, leaves sender/actor/emoji/message null', () => {
+    const event = makeGenericEvent('member.joined', {
+      chat: { id: 'chat_1', type: 'group', name: 'Crew', member_count: 5 },
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.chat).toEqual({ id: 'chat_1', type: 'group', name: 'Crew', member_count: 5 });
+    expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
+    expect(ctx.sender).toBeNull();
+    expect(ctx.actor).toBeNull();
+    expect(ctx.emoji).toBeNull();
+    expect(ctx.message).toBeNull();
+  });
+
+  it('bot.added populates chat and actor', () => {
+    const event = makeGenericEvent('bot.added', {
+      chat: { id: 'chat_1', type: 'group', name: null },
+      actor: { id: 'user_2', handle: 'op', name: 'Op' },
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.actor).toEqual({ id: 'user_2', handle: 'op', name: 'Op' });
+    expect(ctx.user).toBeNull();
+  });
+
+  it('reaction.added populates chat, sender, message (id-only) and emoji', () => {
+    const event = makeGenericEvent('reaction.added', {
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      message: 'msg_5',
+      emoji: '\u{1F44D}',
+      sender: { id: 'user_3', handle: 'reactor', name: 'Reactor' },
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.emoji).toBe('\u{1F44D}');
+    expect(ctx.message).toEqual({
+      id: 'msg_5',
+      text: '',
+      sent_at: '',
+      sender: null,
+      reply_to: null,
+    });
+    expect(ctx.sender).toEqual({ id: 'user_3', handle: 'reactor', name: 'Reactor' });
+  });
+
+  it('an unknown/future event type never throws and leaves everything but chat null', () => {
+    const event = makeGenericEvent('something.new.from.the.future', {});
+    expect(() => Context.fromGenericEvent(event, http)).not.toThrow();
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.chat).toEqual({ id: '', type: '', name: null, member_count: null });
+    expect(ctx.sender).toBeNull();
+    expect(ctx.user).toBeNull();
+    expect(ctx.actor).toBeNull();
+    expect(ctx.emoji).toBeNull();
+    expect(ctx.message).toBeNull();
+  });
+
+  it('a KNOWN type nulls out a stray field the contract says it does not carry (CONTRACT-V1 §3.1, matches python)', () => {
+    const event = makeGenericEvent('member.joined', {
+      chat: { id: 'chat_1', type: 'group', name: null },
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+      // None of these belong on member.joined — they must not leak through.
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      actor: { id: 'user_2', handle: 'op', name: 'Op' },
+      emoji: '\u{1F44D}',
+      message: 'msg_1',
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
+    expect(ctx.sender).toBeNull();
+    expect(ctx.actor).toBeNull();
+    expect(ctx.emoji).toBeNull();
+    expect(ctx.message).toBeNull();
+  });
+
+  it('an UNKNOWN type still populates opportunistically — the stray-field guard is per-known-type only', () => {
+    const event = makeGenericEvent('something.new.from.the.future', {
+      chat: { id: 'chat_1', type: 'group', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      actor: { id: 'user_2', handle: 'op', name: 'Op' },
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+      emoji: '\u{1F44D}',
+      message: 'msg_1',
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    expect(ctx.sender).toEqual({ id: 'user_1', handle: 'gustav', name: 'Gustav' });
+    expect(ctx.actor).toEqual({ id: 'user_2', handle: 'op', name: 'Op' });
+    expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
+    expect(ctx.emoji).toBe('\u{1F44D}');
+    expect(ctx.message?.id).toBe('msg_1');
+  });
+});
+
+describe('Mention', () => {
+  it('token is "@" + handle, never "@{handle}"', () => {
+    const m = mention({ id: 'usr_1', handle: 'gustav', name: 'Gustav' });
+    expect(m.token).toBe('@gustav');
+    expect(m.token).not.toContain('{');
+  });
+
+  it('entry is the wire shape {user: id}', () => {
+    const m = mention({ id: 'usr_1', handle: 'gustav', name: 'Gustav' });
+    expect(m.entry).toEqual({ user: 'usr_1' });
+  });
+
+  it('toString() template-literals the token into text', () => {
+    const m = mention({ id: 'usr_1', handle: 'gustav', name: 'Gustav' });
+    expect(`hi ${m}!`).toBe('hi @gustav!');
+  });
+
+  it('is an instance of the exported Mention class', () => {
+    const m = mention({ id: 'usr_1', handle: 'gustav', name: 'Gustav' });
+    expect(m).toBeInstanceOf(Mention);
+  });
+});
+
+describe('Context actions', () => {
+  function buildGenericCtx(http: HttpClient): Context {
+    const event = makeGenericEvent('member.joined', {
+      chat: { id: 'chat_1', type: 'group', name: null },
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+    });
+    return Context.fromGenericEvent(event, http);
+  }
+
+  it('typing(true) POSTs .../typing with {is_typing: true}, never "state"', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await ctx.typing(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe('POST');
+    expect(requests[0]?.url).toBe('/v1/chats/chat_1/typing');
+    expect(requests[0]?.body).toEqual({ is_typing: true });
+  });
+
+  it('withTyping sends true on entry and false on exit, even when the callback throws', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await expect(
+      ctx.withTyping(async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.body).toEqual({ is_typing: true });
+    expect(requests[1]?.body).toEqual({ is_typing: false });
+  });
+
+  it('edit() PATCHes /v1/messages/{msg} with {text}', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'message', id: 'msg_1', text: 'updated' }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const result = await ctx.edit('msg_1', 'updated');
+    expect(result).toEqual({ object: 'message', id: 'msg_1', text: 'updated' });
+    expect(requests[0]?.method).toBe('PATCH');
+    expect(requests[0]?.url).toBe('/v1/messages/msg_1');
+    expect(requests[0]?.body).toEqual({ text: 'updated' });
+  });
+
+  it('delete() DELETEs /v1/messages/{msg} and returns nothing', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await ctx.delete('msg_1');
+    expect(requests[0]?.method).toBe('DELETE');
+    expect(requests[0]?.url).toBe('/v1/messages/msg_1');
+  });
+
+  it('react() PUTs the percent-encoded emoji onto the message', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await ctx.react('msg_1', '\u{1F44D}');
+    expect(requests[0]?.method).toBe('PUT');
+    expect(requests[0]?.url).toBe(
+      `/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`,
+    );
+  });
+
+  it('unreact() DELETEs the percent-encoded emoji off the message', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await ctx.unreact('msg_1', '\u{1F44D}');
+    expect(requests[0]?.method).toBe('DELETE');
+    expect(requests[0]?.url).toBe(
+      `/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`,
+    );
+  });
+
+  it('send() POSTs /v1/messages with mentions built from Mention, User and raw {user} entries', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const user: import('../src/events.js').User = { id: 'usr_2', handle: 'b', name: 'B' };
+    await ctx.send('chat_9', 'hi @a @b', {
+      mentions: [mention({ id: 'usr_1', handle: 'a', name: 'A' }), user, { user: 'usr_3' }],
+    });
+    expect(requests[0]?.body).toEqual({
+      chat: 'chat_9',
+      text: 'hi @a @b',
+      mentions: [{ user: 'usr_1' }, { user: 'usr_2' }, { user: 'usr_3' }],
+    });
+  });
+
+  it('members() GETs the chat member list and decodes it into a MemberPage', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          object: 'list',
+          data: [{ object: 'user', id: 'usr_1', handle: 'a', name: 'A' }],
+          has_more: true,
+          next_cursor: 'cur_2',
+        }),
+      );
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const page = await ctx.members(undefined, { cursor: 'cur_1' });
+    expect(requests[0]?.method).toBe('GET');
+    expect(requests[0]?.url).toBe('/v1/chats/chat_1/members?cursor=cur_1');
+    expect(page.users).toEqual([{ id: 'usr_1', handle: 'a', name: 'A' }]);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toBe('cur_2');
+  });
+
+  it('nextCursor is null when hasMore is false, even if the envelope sends a cursor anyway (no off-by-one inference)', async () => {
+    const { url, server } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          object: 'list',
+          data: [],
+          has_more: false,
+          next_cursor: 'cur_stale',
+        }),
+      );
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const page = await ctx.members();
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('members() never auto-loads a second page — one call, one page', async () => {
+    let calls = 0;
+    const { url, server } = await startServer((_req, res) => {
+      calls += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [], has_more: true, next_cursor: 'cur_2' }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    await ctx.members();
+    expect(calls).toBe(1);
+  });
+
+  it('edit/delete/react/unreact accept a Message object, not just its id string', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const message: import('../src/events.js').Message = {
+      id: 'msg_1',
+      text: 'hi',
+      sent_at: '',
+      sender: null,
+      reply_to: null,
+    };
+    await ctx.delete(message);
+    await ctx.react(message, '\u{1F44D}');
+    await ctx.unreact(message, '\u{1F44D}');
+    expect(requests[0]?.url).toBe('/v1/messages/msg_1');
+    expect(requests[1]?.url).toBe(
+      `/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`,
+    );
+    expect(requests[2]?.url).toBe(
+      `/v1/messages/msg_1/reactions/${encodeURIComponent('\u{1F44D}')}`,
+    );
+  });
+
+  it('send() and members() accept a Chat object, not just its id string', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [], has_more: false, next_cursor: null }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = buildGenericCtx(http);
+    const chat: import('../src/events.js').Chat = {
+      id: 'chat_42',
+      type: 'group',
+      name: null,
+      member_count: null,
+    };
+    await ctx.members(chat);
+    expect(requests[0]?.url).toBe('/v1/chats/chat_42/members');
+  });
+
+  it('typing() throws AurivalError when the context has no chat id', async () => {
+    const http = new HttpClient('http://127.0.0.1:1', new FakeAuth() as unknown as Auth);
+    const event = makeGenericEvent('member.joined', {
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    await expect(ctx.typing(true)).rejects.toBeInstanceOf(errors.AurivalError);
+  });
+
+  it('members() throws AurivalError when no chat id is available', async () => {
+    const http = new HttpClient('http://127.0.0.1:1', new FakeAuth() as unknown as Auth);
+    const event = makeGenericEvent('member.joined', {
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+    });
+    const ctx = Context.fromGenericEvent(event, http);
+    await expect(ctx.members()).rejects.toBeInstanceOf(errors.AurivalError);
   });
 });

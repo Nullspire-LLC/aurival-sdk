@@ -1,18 +1,28 @@
 /**
- * The mirror contract (SDK-7). `sdk/python/aurival/__init__.py` exports 57 names;
- * this package exports the same 57. A name missing here is a permanent asymmetry:
- * adding an export later is free, removing one is a break.
+ * The mirror contract (SDK-7). `sdk/python/aurival/__init__.py` exports the same
+ * names this package does. A name missing here is a permanent asymmetry: adding
+ * an export later is free, removing one is a break. Bumped 57 -> 61 for the
+ * AMENDMENT-04 additions: `Mention`, `mention`, `MemberPage`. The merge-gate
+ * senior review then required four more real error classes in both SDKs —
+ * `MentionNotMember`, `MentionTokenMissing`, `MessageNotYours`,
+ * `ReactionEmojiTooLong` — taking python's `__all__` to 65. `EXPECTED` also
+ * carries one entry with no Python counterpart, `MentionLike` — a JS-only
+ * type export (a union alias for what `send(..., { mentions })` accepts). It
+ * is listed here, and in `TYPE_ONLY`, purely so `tsc` catches its removal; it
+ * is excluded from the runtime-surface comparison below because it is
+ * type-only, and it is not part of the Python mirror contract.
  */
 
 import { describe, it, expect } from 'vitest';
 import * as aurival from '../src/index.js';
 
-// The three type-only rows, imported so `tsc` fails if any goes missing. Python's
-// User/Chat/Command are frozen dataclasses with no methods; the JS mirror of a
-// pure record is an interface, which has no runtime binding.
-import type { Chat, Command, User } from '../src/index.js';
+// The type-only rows, imported so `tsc` fails if any goes missing. Python's
+// User/Chat/Command/MemberPage are frozen dataclasses with no methods; the JS
+// mirror of a pure record is an interface, which has no runtime binding.
+// `MentionLike` is JS-only (see file header) and has no Python counterpart at all.
+import type { Chat, Command, MemberPage, MentionLike, User } from '../src/index.js';
 
-const TYPE_ONLY = ['Chat', 'Command', 'User'] as const;
+const TYPE_ONLY = ['Chat', 'Command', 'MemberPage', 'MentionLike', 'User'] as const;
 
 /** Exactly Python's `__all__`, with its three casing changes applied. */
 const EXPECTED = [
@@ -52,6 +62,12 @@ const EXPECTED = [
   'InvalidRequestError',
   'KeyAlreadyPaired',
   'KeyRevoked',
+  'MemberPage',
+  'Mention',
+  'MentionLike',
+  'MentionNotMember',
+  'MentionTokenMissing',
+  'MessageNotYours',
   'NotFound',
   'PairRateLimited',
   'ParameterInvalid',
@@ -60,6 +76,7 @@ const EXPECTED = [
   'ProtocolError',
   'RateLimitError',
   'RateLimited',
+  'ReactionEmojiTooLong',
   'ServerRestarting',
   'SessionSuperseded',
   'SyncRateLimited',
@@ -72,12 +89,17 @@ const EXPECTED = [
   'User',
   'actionForBye',
   'fromEnvelope',
+  'mention',
   'version',
 ];
 
 describe('the public surface', () => {
-  it('is exactly the 57 names Python exports', () => {
-    expect(EXPECTED.length).toBe(57);
+  // Python's `__all__` has 65 names (61 pre-existing + the 4 new error classes);
+  // 64 of them are mirrored here. `Message` is the one it does not mirror — it
+  // is a type-only export in `index.ts` and predates this list, so the count
+  // below is 64 mirrored names plus the JS-only `MentionLike`.
+  it('is exactly the 64 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(65);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -121,14 +143,31 @@ describe('the public surface', () => {
     expect(Object.values(aurival.ByeAction).every((v) => typeof v === 'string')).toBe(true);
   });
 
-  it('types the three record rows', () => {
+  it('types the record rows', () => {
     const user: User = { id: 'usr_1', handle: 'h', name: 'n' };
-    const chat: Chat = { id: 'chat_1', type: 'dm', name: null };
+    const chat: Chat = { id: 'chat_1', type: 'dm', name: null, member_count: null };
     const command: Command = { name: 'ping', description: '' };
-    expect([user.id, chat.id, command.name]).toEqual(['usr_1', 'chat_1', 'ping']);
+    const page: MemberPage = { users: [user], hasMore: false, nextCursor: null };
+    const mentionLike: MentionLike = { user: 'usr_1' };
+    expect([user.id, chat.id, command.name, page.users[0]?.id, mentionLike.user]).toEqual([
+      'usr_1',
+      'chat_1',
+      'ping',
+      'usr_1',
+      'usr_1',
+    ]);
+  });
+
+  it('mention() builds a Mention with a template-literal-ready token', () => {
+    const user: User = { id: 'usr_1', handle: 'h', name: 'n' };
+    const m = aurival.mention(user);
+    expect(m.token).toBe('@h');
+    expect(m.entry).toEqual({ user: 'usr_1' });
+    expect(`hey ${m}`).toBe('hey @h');
+    expect(m).toBeInstanceOf(aurival.Mention);
   });
 
   it('reports a version', () => {
-    expect(aurival.version).toBe('0.1.8');
+    expect(aurival.version).toBe('0.2.0');
   });
 });

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import urllib.parse
 import uuid
 from typing import TYPE_CHECKING
 
@@ -147,6 +148,13 @@ class HttpClient:
                 raise errors.TransportError(str(exc)) from None
 
             if status < 400:
+                # A 204 No Content (typing, reactions, delete) has no body to
+                # decode — an empty dict, not a ProtocolError (R3). Gated on
+                # the status itself, not merely an empty body: an empty-bodied
+                # 200 (should one ever occur on an existing endpoint) still
+                # raises ProtocolError exactly as it did on 0.1.8.
+                if status == 204 and not raw:
+                    return {}
                 return _decode_object(raw)
 
             envelope = _decode_object(raw)
@@ -187,13 +195,69 @@ class HttpClient:
             # invalid_request_error, permission_error: never retried.
             raise exc
 
-    async def send_message(self, chat: str, text: str, *, idempotency_key: str) -> dict:
+    async def send_message(
+        self,
+        chat: str,
+        text: str,
+        *,
+        idempotency_key: str,
+        mentions: list[dict[str, str]] | None = None,
+    ) -> dict:
+        body: dict[str, object] = {"chat": chat, "text": text}
+        # CONTRACT-V1 §5.0.1: absent and `[]` mean exactly the same thing, so
+        # an empty list is omitted rather than sent — matching the js seam,
+        # not merely legal per the contract.
+        if mentions:
+            body["mentions"] = mentions
         return await self.request(
             "POST",
             "/v1/messages",
-            body={"chat": chat, "text": text},
+            body=body,
             idempotency_key=idempotency_key,
         )
+
+    async def set_typing(self, chat: str, is_typing: bool) -> dict:
+        return await self.request(
+            "POST",
+            f"/v1/chats/{chat}/typing",
+            body={"is_typing": is_typing},
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def edit_message(self, msg: str, text: str) -> dict:
+        return await self.request(
+            "PATCH",
+            f"/v1/messages/{msg}",
+            body={"text": text},
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def delete_message(self, msg: str) -> dict:
+        return await self.request(
+            "DELETE",
+            f"/v1/messages/{msg}",
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def set_reaction(self, msg: str, emoji: str) -> dict:
+        return await self.request(
+            "PUT",
+            f"/v1/messages/{msg}/reactions/{urllib.parse.quote(emoji, safe='')}",
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def unset_reaction(self, msg: str, emoji: str) -> dict:
+        return await self.request(
+            "DELETE",
+            f"/v1/messages/{msg}/reactions/{urllib.parse.quote(emoji, safe='')}",
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def list_members(self, chat: str, cursor: str | None = None) -> dict:
+        path = f"/v1/chats/{chat}/members"
+        if cursor:
+            path += f"?cursor={urllib.parse.quote(cursor, safe='')}"
+        return await self.request("GET", path)
 
     async def sync_commands(self, bot: str, commands: list[dict[str, str]]) -> dict:
         return await self.request(

@@ -29,6 +29,9 @@ import {
   InvalidRequestError,
   KeyAlreadyPaired,
   KeyRevoked,
+  MentionNotMember,
+  MentionTokenMissing,
+  MessageNotYours,
   NotFound,
   PairRateLimited,
   ParameterInvalid,
@@ -37,6 +40,7 @@ import {
   ProtocolError,
   RateLimitError,
   RateLimited,
+  ReactionEmojiTooLong,
   ServerRestarting,
   SessionSuperseded,
   SyncRateLimited,
@@ -50,13 +54,24 @@ import {
   type AurivalAPIErrorClass,
 } from '../src/errors.js';
 
-// The plan this test mirrors was written against a 31-row catalogue. BA-R23
-// landed on main (a522dcb4) and its ruling gave `too_many_problems` a real
-// row rather than a placeholder (see the class's own doc comment), taking it
-// to 32. BA-R31/BA-R33 then added `idempotency_key_invalid` and
-// `key_already_paired`, so the live catalogue is 34 rows. This literal is the
-// acceptance bar: a deleted or silently-added row fails the length/key-set
-// assertion below.
+// This literal counts SDK error CLASSES — CODE_CLASSES's key set — which is
+// a different number from the Go backend's error catalogue (that number is
+// tracked live by python's own catalogue-parsing test, not by a literal
+// here). The plan this test mirrors was written against 31 SDK classes.
+// BA-R23 landed on main (a522dcb4) and its ruling gave `too_many_problems` a
+// real row rather than a placeholder (see the class's own doc comment),
+// taking it to 32. BA-R31/BA-R33 then added `idempotency_key_invalid` and
+// `key_already_paired`, taking it to 34. AMENDMENT-04's mention/reaction/edit
+// capabilities then added four more SDK classes — the merge-gate senior
+// review ruled these must be real classes in both SDKs rather than fall back
+// to the family class: `reaction_emoji_too_long` and `mention_token_missing`
+// (invalid_request_error, 400), `mention_not_member` (invalid_request_error,
+// 400 — deliberately answered for both a nonexistent user id and an existing
+// non-member, AMENDMENT-04 A-4/R-8, so it can never serve as a
+// user-existence oracle), and `message_not_yours` (permission_error, 403).
+// That takes the SDK class count to 38. This literal is the acceptance bar
+// for THAT number: a deleted or silently-added class fails the
+// length/key-set assertion below.
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -92,6 +107,10 @@ const EXPECTED_CODES = [
   'unknown_operation',
   'ack_unknown_event',
   'too_many_problems',
+  'reaction_emoji_too_long',
+  'mention_not_member',
+  'mention_token_missing',
+  'message_not_yours',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -130,6 +149,10 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   unknown_operation: [UnknownOperation, 'invalid_request_error'],
   ack_unknown_event: [AckUnknownEvent, 'invalid_request_error'],
   too_many_problems: [TooManyProblems, 'invalid_request_error'],
+  reaction_emoji_too_long: [ReactionEmojiTooLong, 'invalid_request_error'],
+  mention_not_member: [MentionNotMember, 'invalid_request_error'],
+  mention_token_missing: [MentionTokenMissing, 'invalid_request_error'],
+  message_not_yours: [MessageNotYours, 'permission_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {
@@ -145,7 +168,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 34-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 38-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });

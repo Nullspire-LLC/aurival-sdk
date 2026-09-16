@@ -179,6 +179,32 @@ class ServerRestarting(APIError): ...
 class IdleTimeout(APIError): ...
 
 
+class ReactionEmojiTooLong(InvalidRequestError):
+    """`reaction_emoji_too_long` — the emoji exceeded the server's byte-length
+    clamp (>32 bytes). Not an emoji allowlist: the server does not validate
+    that the value is a real emoji at all, only that it fits (AMENDMENT-04
+    A-2)."""
+
+
+class MentionNotMember(InvalidRequestError):
+    """`mention_not_member` — the mentioned user is not a member of the chat.
+
+    Deliberately identical whether the id names a real user who just isn't a
+    member, or doesn't exist at all (AMENDMENT-04 A-4, R-8) — collapsing the
+    two prevents a mention field from being used as a user-existence oracle.
+    """
+
+
+class MentionTokenMissing(InvalidRequestError):
+    """`mention_token_missing` — a `mentions` entry's `@handle` token was not
+    found in `text`."""
+
+
+class MessageNotYours(PermissionDeniedError):
+    """`message_not_yours` — `edit`/`delete`/react actions only work on the
+    bot's own messages."""
+
+
 DOC_URL_PREFIX = "https://bots.aurival.com/docs/errors#"
 
 TYPE_CLASSES: dict[str, type[AurivalAPIError]] = {
@@ -225,6 +251,10 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     "ack_unknown_event": AckUnknownEvent,
     # SDK-39: no wire sender at HEAD. See TooManyProblems.
     "too_many_problems": TooManyProblems,
+    "reaction_emoji_too_long": ReactionEmojiTooLong,
+    "mention_not_member": MentionNotMember,
+    "mention_token_missing": MentionTokenMissing,
+    "message_not_yours": MessageNotYours,
 }
 
 
