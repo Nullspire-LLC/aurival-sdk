@@ -55,6 +55,12 @@ class _StubHttp:
         self.listed += 1
         return {"object": "list", "data": []}
 
+    async def set_typing(self, chat: str, is_typing: bool) -> dict:
+        self.sent.append(
+            {"method": "TYPING", "chat": chat, "is_typing": is_typing, "at": time.monotonic()}
+        )
+        return {}
+
 
 # --- SDK-32: shutdown waits, bounded, for handlers still running -------------
 
@@ -652,3 +658,103 @@ async def test_start_does_not_raise_at_exactly_fifty_registered_commands(
         async def handler(ctx: Any) -> None: ...
 
     await bot.start()
+
+
+# --- SDK-41: auto-typing for slow command handlers ----------------------------
+
+
+def _typing_calls(http: _StubHttp) -> list[bool]:
+    return [c["is_typing"] for c in http.sent if c["method"] == "TYPING"]
+
+
+@pytest.mark.asyncio
+async def test_a_fast_handler_sends_no_typing_at_all() -> None:
+    bot = Bot()
+    http = _StubHttp()
+    bot._http = http  # type: ignore[assignment]
+
+    @bot.command("ping")
+    async def ping(ctx: Any) -> None:
+        await ctx.reply("pong")
+
+    await bot._dispatch(_event())
+    await asyncio.sleep(bot_module._AUTO_TYPING_DELAY_S + 0.1)
+    assert _typing_calls(http) == [], "a reply inside the delay must never flash the indicator"
+    assert [c["method"] for c in http.sent] == ["POST"]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_handler_shows_typing_after_the_delay_and_clears_it_on_return() -> None:
+    bot = Bot()
+    http = _StubHttp()
+    bot._http = http  # type: ignore[assignment]
+    replied_at = 0.0
+
+    @bot.command("slow")
+    async def slow(ctx: Any) -> None:
+        nonlocal replied_at
+        await asyncio.sleep(bot_module._AUTO_TYPING_DELAY_S + 0.2)
+        replied_at = time.monotonic()
+        await ctx.reply("done")
+
+    await bot._dispatch(_event(command="slow"))
+    assert _typing_calls(http) == [True, False]
+    started = next(c for c in http.sent if c["method"] == "TYPING")
+    assert started["chat"] == "chat_1"
+    assert started["at"] < replied_at, "typing must be on the wire before the reply, not after"
+    assert http.sent[-1]["is_typing"] is False, "the indicator is cleared after the handler returns"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_handler_that_raises_still_clears_typing() -> None:
+    bot = Bot()
+    http = _StubHttp()
+    bot._http = http  # type: ignore[assignment]
+
+    @bot.command("boom")
+    async def boom(ctx: Any) -> None:
+        await asyncio.sleep(bot_module._AUTO_TYPING_DELAY_S + 0.2)
+        raise RuntimeError("nope")
+
+    await bot._dispatch(_event(command="boom"))
+    assert _typing_calls(http) == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_auto_typing_can_be_switched_off() -> None:
+    bot = Bot(auto_typing=False)
+    http = _StubHttp()
+    bot._http = http  # type: ignore[assignment]
+
+    @bot.command("slow")
+    async def slow(ctx: Any) -> None:
+        await asyncio.sleep(bot_module._AUTO_TYPING_DELAY_S + 0.2)
+
+    await bot._dispatch(_event(command="slow"))
+    assert _typing_calls(http) == []
+
+
+@pytest.mark.asyncio
+async def test_a_typing_failure_never_reaches_the_handler_or_the_error_hook() -> None:
+    bot = Bot()
+    http = _StubHttp()
+
+    async def broken_typing(chat: str, is_typing: bool) -> dict:
+        raise RuntimeError("typing endpoint down")
+
+    http.set_typing = broken_typing  # type: ignore[method-assign]
+    bot._http = http  # type: ignore[assignment]
+    hooked: list[BaseException] = []
+
+    @bot.on_error
+    async def hook(exc: BaseException, ctx: Any) -> None:
+        hooked.append(exc)
+
+    @bot.command("slow")
+    async def slow(ctx: Any) -> None:
+        await asyncio.sleep(bot_module._AUTO_TYPING_DELAY_S + 0.2)
+        await ctx.reply("done")
+
+    await bot._dispatch(_event(command="slow"))
+    assert hooked == []
+    assert [c["method"] for c in http.sent] == ["POST"]

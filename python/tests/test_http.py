@@ -205,6 +205,34 @@ async def test_rate_limit_error_honours_retry_after_and_retries():
 
 
 @pytest.mark.asyncio
+async def test_a_retry_after_past_the_bound_is_raised_at_once_not_slept():
+    """SDK-40: a 600 s retry_after used to be slept inside the command handler,
+    holding the event's ack open for ten minutes. Past the bound it raises."""
+    calls = 0
+
+    async def handler(request: web.Request):
+        nonlocal calls
+        calls += 1
+        resp = web.json_response(
+            _envelope("rate_limit_error", "rate_limited", "slow down"), status=429
+        )
+        resp.headers["Retry-After"] = "600"
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/messages", handler)
+    async with Serve(app) as s:
+        client = s.client(auth=FakeAuth())
+        spy = SleepSpy()
+        client._sleep = spy
+        with pytest.raises(errors.RateLimited) as excinfo:
+            await client.send_message("chat_1", "hi", idempotency_key="idem-1")
+        assert excinfo.value.retry_after == 600.0
+        assert calls == 1
+        assert spy.calls == []
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_error_bounded_at_5_attempts():
     calls = 0
 

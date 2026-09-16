@@ -49,6 +49,14 @@ _log = _default_logger()
 # (SDK-26): this many tries total, first attempt included.
 _MAX_ATTEMPTS = 5
 _DEFAULT_RETRY_AFTER = 1.0
+# A `retry_after` longer than this is not a transient the request should wait
+# out (SDK-40). The generic rate limit is retried INSIDE whatever awaited the
+# request, which for a reply is the command handler, and the handler holds the
+# event's ack open for as long as it runs. A server once answered 600 s; the
+# bot then slept ten minutes per command, every unacked event was redelivered
+# every 30 s behind it, and the whole chat looked dead. Past this bound the
+# error is raised at once and the handler decides.
+_MAX_RETRY_AFTER_S = 15.0
 
 
 def _decode_object(raw: bytes) -> dict[str, object]:
@@ -181,6 +189,14 @@ class HttpClient:
                 # bot.py's background sync per SDK-35) — retrying them here would
                 # make sync_commands swallow SyncRateLimited, which it must not.
                 if type(exc) is errors.RateLimited and attempt < _MAX_ATTEMPTS:
+                    if retry_after > _MAX_RETRY_AFTER_S:
+                        self._logger.warning(
+                            "rate limited for %.0fs, longer than the %.0fs this client will wait;"
+                            " raising",
+                            retry_after,
+                            _MAX_RETRY_AFTER_S,
+                        )
+                        raise exc
                     self._logger.warning("rate limited, retrying after %.1fs", retry_after)
                     await self._sleep(retry_after)
                     continue

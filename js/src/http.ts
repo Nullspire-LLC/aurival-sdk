@@ -13,6 +13,14 @@ export const DEFAULT_HOST = 'https://bots.aurival.com';
 // Both the rate-limit lane and the api_error/transport lane are bounded here
 // (SDK-26): this many tries total, first attempt included.
 const MAX_ATTEMPTS = 5;
+// A `retry_after` longer than this is not a transient the request should wait
+// out (SDK-40). The generic rate limit is retried INSIDE whatever awaited the
+// request, which for a reply is the command handler, and the handler holds the
+// event's ack open for as long as it runs. A server once answered 600 s; the
+// bot then slept ten minutes per command, every unacked event was redelivered
+// every 30 s behind it, and the whole chat looked dead. Past this bound the
+// error is thrown at once and the handler decides.
+const MAX_RETRY_AFTER_MS = 15_000;
 const DEFAULT_RETRY_AFTER_MS = 1000;
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -206,6 +214,12 @@ export class HttpClient {
         // background sync per SDK-35) — retrying them here would make
         // syncCommands swallow SyncRateLimited, which it must not.
         if (exc.constructor === errors.RateLimited && attempt < MAX_ATTEMPTS) {
+          if (retryAfter > MAX_RETRY_AFTER_MS) {
+            this.#logger.warn(
+              `rate limited for ${(retryAfter / 1000).toFixed(0)}s, longer than the ${(MAX_RETRY_AFTER_MS / 1000).toFixed(0)}s this client will wait; throwing`,
+            );
+            throw exc;
+          }
           this.#logger.warn(`rate limited, retrying after ${(retryAfter / 1000).toFixed(1)}s`);
           await this.sleep(retryAfter);
           continue;

@@ -194,6 +194,12 @@ if page.has_more:            # never inferred from a short page or a cursor alon
     more = await ctx.members(cursor=page.next_cursor)  # one page at a time — never auto-loads
 ```
 
+The typing indicator is also automatic (0.2.1): a command handler still running 300 ms after
+it started shows the chat "is thinking", and the indicator clears when the handler returns,
+including on an exception. A handler that replies inside those 300 ms sends nothing, so a fast
+bot never flickers. `Bot(auto_typing=False)` turns it off if you would rather drive
+`ctx.typing()` yourself.
+
 `ctx.send(chat, text, mentions=...)` posts to any chat, not only the one that triggered the
 handler, and mentions a user by writing `@` + their handle into `text` yourself — `mention()`
 builds that token for you:
@@ -247,6 +253,11 @@ try:
 except RateLimitError as exc:
     print(exc.code, exc.retry_after, exc.doc_url)
 ```
+
+A `rate_limited` reply is retried for you, up to five attempts, as long as `retry_after` is
+15 seconds or less. Past that (0.2.1) the error is raised at once instead of slept through:
+a handler that sleeps for minutes holds its event unacknowledged for the whole wait, and the
+server redelivers behind it.
 
 `KeyRevoked`, `SessionSuperseded` and `BotSuspended` end the process on purpose — each one
 means something a reconnect cannot fix. Everything else the SDK handles for you:

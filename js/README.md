@@ -151,6 +151,12 @@ fields it happens to carry. There is no `reaction.removed` event: un-reacting is
 Every action is available on a handler's `ctx`. `ctx.chat.member_count` carries the chat's
 live participant count, so you don't need a separate call to know how many people are in it:
 
+The typing indicator is also automatic (0.2.1): a command handler still running 300 ms after
+it started shows the chat "is thinking", and the indicator clears when the handler returns,
+including on a throw. A handler that replies inside those 300 ms sends nothing, so a fast bot
+never flickers. `new Bot({ autoTyping: false })` turns it off if you would rather drive
+`ctx.withTyping()` yourself.
+
 ```ts
 bot.command('busy', async (ctx) => {
   await ctx.withTyping(async () => {
@@ -264,6 +270,11 @@ try {
   }
 }
 ```
+
+A `rate_limited` reply is retried for you, up to five attempts, as long as `retry_after` is
+15 seconds or less. Past that (0.2.1) the error is thrown at once instead of slept through:
+a handler that sleeps for minutes holds its event unacknowledged for the whole wait, and the
+server redelivers behind it.
 
 `KeyRevoked`, `SessionSuperseded` and `BotSuspended` end the process on purpose — each one
 means something a reconnect cannot fix. Everything else the SDK handles for you: token

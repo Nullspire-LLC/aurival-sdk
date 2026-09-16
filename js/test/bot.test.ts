@@ -10,7 +10,8 @@ import type { AddressInfo } from 'node:net';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Bot, reportConflicts, syncCommandsAndReport } from '../src/bot.js';
+import { AUTO_TYPING_DELAY_MS, Bot, reportConflicts, syncCommandsAndReport } from '../src/bot.js';
+import type { Context } from '../src/events.js';
 import { AurivalError, BotSuspended, SessionSuperseded } from '../src/errors.js';
 import { HttpClient } from '../src/http.js';
 import type { Logger } from '../src/http.js';
@@ -229,7 +230,17 @@ function startFakeBotAPI(): Promise<{ url: string; close: () => Promise<void> }>
       for await (const _chunk of req) void _chunk;
       if (req.url === '/v1/token' && req.method === 'POST') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }));
+        // An hour out, like a real token. A far-future expiry (2099) put the
+        // rotation timer past setTimeout's 32-bit ceiling, which Node treated
+        // as 1 ms until socket.ts clamped it: the socket rotated, closed and
+        // redialled every few milliseconds, and a handler slower than that
+        // never acked on the connection the test was watching.
+        res.end(
+          JSON.stringify({
+            access_token: 'tok_test',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+        );
         return;
       }
       if (
@@ -372,13 +383,43 @@ describe('Bot#start command count cap (Lane 58 S2)', () => {
 
 /** One server answering both the REST leg (`/v1/token`, command sync) and
  * upgrading to the gateway WS, so `Bot.start()` can run for real end to end. */
-async function startCombinedFakeServer(script: Parameters<typeof startGateway>[0]) {
+/** Every `POST /v1/chats/:chat/typing` body the fake server answered, in order. */
+type TypingCall = { chat: string; is_typing: boolean; at: number };
+
+async function startCombinedFakeServer(
+  script: Parameters<typeof startGateway>[0],
+  typingCalls: TypingCall[] = [],
+) {
   const gateway = await startGateway(script, (req, res) => {
     void (async () => {
-      for await (const _chunk of req) void _chunk;
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const typing = /^\/v1\/chats\/([^/]+)\/typing$/.exec(req.url ?? '');
+      if (typing !== null && req.method === 'POST') {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { is_typing: boolean };
+        typingCalls.push({ chat: typing[1] as string, is_typing: body.is_typing, at: Date.now() });
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (req.url === '/v1/messages' && req.method === 'POST') {
+        res.writeHead(201, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ object: 'message', id: 'msg_2' }));
+        return;
+      }
       if (req.url === '/v1/token' && req.method === 'POST') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ access_token: 'tok_test', expires_at: '2099-01-01T00:00:00Z' }));
+        // An hour out, like a real token. A far-future expiry (2099) put the
+        // rotation timer past setTimeout's 32-bit ceiling, which Node treated
+        // as 1 ms until socket.ts clamped it: the socket rotated, closed and
+        // redialled every few milliseconds, and a handler slower than that
+        // never acked on the connection the test was watching.
+        res.end(
+          JSON.stringify({
+            access_token: 'tok_test',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+        );
         return;
       }
       if (
@@ -631,5 +672,93 @@ describe('Bot#on multiplicity, over a real gateway connection', () => {
       await gateway.close();
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// --------------------------------------------------------------------------
+// SDK-41: auto-typing for slow command handlers
+// --------------------------------------------------------------------------
+
+describe('auto-typing (SDK-41)', () => {
+  async function runCommandBot(
+    handler: (ctx: Context) => Promise<void>,
+    options: { autoTyping?: boolean } = {},
+  ): Promise<TypingCall[]> {
+    const typingCalls: TypingCall[] = [];
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(commandInvokedEvent('evt_cmd'));
+      // Outlive the slowest handler under test: a script that ends closes the
+      // connection, and the ack for an in-flight handler would then land on a
+      // reconnect instead of here.
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }, typingCalls);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aurival-bot-test-'));
+    const keyPath = path.join(dir, 'machine.json');
+    const machine: Machine = {
+      bot: 'bot_test',
+      machine: 'machine_test',
+      host: gateway.host,
+      created: '2026-01-01T00:00:00Z',
+    };
+    await new KeyFile(keyPath).save(MachineKey.generate(), machine);
+    try {
+      const dbg: string[] = [];
+      const log: Logger = { debug: (m) => dbg.push('D ' + m), info: (m) => dbg.push('I ' + m), warn: (m) => dbg.push('W ' + m), error: (m) => dbg.push('E ' + m) };
+      const bot = new Bot({ host: gateway.host, keyPath, quiet: true, logger: log, ...options });
+      bot.command('ping', handler);
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_cmd'), 4000);
+        // eslint-disable-next-line no-console
+        console.log('DEBUG', gateway.state.connectCount, JSON.stringify(gateway.state.received.slice(0, 5)), JSON.stringify(gateway.state.closes.slice(0, 3)), JSON.stringify(dbg.slice(0, 12)));
+        expect(ok, 'command.invoked was never acked').toBe(true);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    } finally {
+      await gateway.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+    return typingCalls;
+  }
+
+  it('a fast handler sends no typing at all', async () => {
+    const calls = await runCommandBot(async (ctx) => {
+      await ctx.reply('pong');
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('a slow handler shows typing after the delay and clears it on return', async () => {
+    let repliedAt = 0;
+    const calls = await runCommandBot(async (ctx) => {
+      await new Promise((resolve) => setTimeout(resolve, AUTO_TYPING_DELAY_MS + 200));
+      repliedAt = Date.now();
+      await ctx.reply('done');
+    });
+    expect(calls.map((c) => c.is_typing)).toEqual([true, false]);
+    expect(calls[0]?.chat).toBe('chat_1');
+    expect(calls[0]!.at).toBeLessThanOrEqual(repliedAt);
+  });
+
+  it('a slow handler that throws still clears typing', async () => {
+    const calls = await runCommandBot(async () => {
+      await new Promise((resolve) => setTimeout(resolve, AUTO_TYPING_DELAY_MS + 200));
+      throw new Error('nope');
+    });
+    expect(calls.map((c) => c.is_typing)).toEqual([true, false]);
+  });
+
+  it('can be switched off', async () => {
+    const calls = await runCommandBot(
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, AUTO_TYPING_DELAY_MS + 200));
+      },
+      { autoTyping: false },
+    );
+    expect(calls).toEqual([]);
   });
 });

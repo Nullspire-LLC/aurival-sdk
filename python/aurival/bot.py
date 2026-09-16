@@ -54,6 +54,20 @@ class _Registered:
     handler: Handler
 
 
+# How long a command handler runs before the chat is told the bot is thinking
+# (SDK-41). Long enough that an ordinary reply never trips it, short enough
+# that a slow one reads as work in progress rather than silence.
+_AUTO_TYPING_DELAY_S = 0.3
+
+
+class _AutoTyping:
+    """The per-dispatch state of the auto-typing timer."""
+
+    task: asyncio.Task[None] | None = None
+    armed: bool = False
+    sent: bool = False
+
+
 class Bot:
     """A bot. Register commands, then `run()`.
 
@@ -78,8 +92,15 @@ class Bot:
         key_path: str | Path | None = None,
         logger: logging.Logger | None = None,
         quiet: bool = False,
+        auto_typing: bool = True,
     ) -> None:
         self._registered: dict[str, _Registered] = {}
+        # Auto-typing (SDK-41): a command handler still running after
+        # _AUTO_TYPING_DELAY_S shows the chat "is thinking", and the indicator
+        # is cleared when the handler returns. A handler that replies inside
+        # the delay sends nothing, so a fast bot never flickers. `False` keeps
+        # typing entirely in the developer's hands (`async with ctx.typing()`).
+        self._auto_typing = auto_typing
         self._event_handlers: dict[str, list[Handler]] = {}
         self._error_hook: ErrorHook | None = None
         self._log = logger or _log
@@ -381,6 +402,43 @@ class Bot:
 
     # -- dispatch ----------------------------------------------------------
 
+    # -- auto-typing (SDK-41) ----------------------------------------------
+
+    def _start_auto_typing(self, ctx: Context) -> _AutoTyping | None:
+        if not self._auto_typing or not ctx.chat.id:
+            return None
+        state = _AutoTyping()
+
+        async def arm() -> None:
+            await asyncio.sleep(_AUTO_TYPING_DELAY_S)
+            # Past this point a cancel could abandon a request the server has
+            # already applied, so the stop side awaits instead of cancelling.
+            state.armed = True
+            try:
+                await ctx._http.set_typing(ctx.chat.id, True)
+                state.sent = True
+            except Exception as exc:  # typing is best-effort, never the reply's problem
+                self._log.debug("auto typing start failed: %s", exc)
+
+        state.task = asyncio.create_task(arm())
+        return state
+
+    async def _stop_auto_typing(self, state: _AutoTyping | None, ctx: Context) -> None:
+        if state is None or state.task is None:
+            return
+        if not state.armed:
+            state.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await state.task
+            return
+        await state.task
+        if not state.sent:
+            return
+        try:
+            await ctx._http.set_typing(ctx.chat.id, False)
+        except Exception as exc:
+            self._log.debug("auto typing stop failed: %s", exc)
+
     async def _dispatch(self, event: Event) -> None:
         """One event. Runs the handler(s), never lets one take the bot down
         (SDK-16). Only reached for `command.invoked` or a type this bot has a
@@ -408,12 +466,15 @@ class Bot:
 
             assert self._http is not None
             ctx = Context.from_event(event, http=self._http)
+            typing = self._start_auto_typing(ctx)
             try:
                 await registered.handler(ctx)
             # One bad command must not take the bot offline (SDK-16).
             except Exception as exc:
                 self._log.exception("handler for %r raised", name)
                 await self._call_error_hook(exc, ctx)
+            finally:
+                await self._stop_auto_typing(typing, ctx)
             return
 
         handlers = self._event_handlers.get(event.type)

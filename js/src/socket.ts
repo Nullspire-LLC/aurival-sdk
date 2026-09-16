@@ -119,6 +119,8 @@ const DEFAULT_ROTATION_JITTER_MS = 5_000;
  * `bye access_token_expired` fallback owns recovery exactly as it does today.
  */
 const MIN_ROTATION_INTERVAL_MS = 30_000;
+/** The largest delay Node's setTimeout honours; anything above fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** A frame the read loop can wait on without sitting behind a raw callback. */
 type ConnEvent = { kind: 'message'; data: string | null } | { kind: 'close' } | { kind: 'error' };
@@ -491,7 +493,14 @@ export class Socket {
     const deadlineMs = this.#nextRotationDeadlineMs();
     if (deadlineMs === null) return () => {};
     let stopped = false;
-    const delay = Math.max(this.#minRotationIntervalMs, deadlineMs - Date.now());
+    // Clamped to setTimeout's 32-bit ceiling: past it Node fires the timer
+    // after 1 ms, which turns a very long-lived token into a rotate/close/
+    // redial loop on every connection. A rotation that far out simply
+    // re-arms on the next connection.
+    const delay = Math.min(
+      Math.max(this.#minRotationIntervalMs, deadlineMs - Date.now()),
+      MAX_TIMER_DELAY_MS,
+    );
     const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
       if (stopped) return;
       void this.#rotateToken(ws, generation);

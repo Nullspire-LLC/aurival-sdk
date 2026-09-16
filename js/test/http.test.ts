@@ -512,6 +512,30 @@ describe('rate_limit_error', () => {
     );
   });
 
+  // SDK-40: a 600 s retry_after used to be slept inside the command handler,
+  // holding the event's ack open for ten minutes. Past the bound it throws.
+  it('throws at once, without sleeping, when retry_after is past the 15s bound', async () => {
+    let calls = 0;
+    await withServer(
+      (_req, res) => {
+        calls += 1;
+        sendJson(res, 429, envelope('rate_limit_error', 'rate_limited', 'slow down'), {
+          'Retry-After': '600',
+        });
+      },
+      async ({ url }) => {
+        const client = new HttpClient(url, asAuth(new FakeAuth()));
+        const spy = new SleepSpy();
+        client.sleep = spy.fn;
+        await expect(client.sendMessage('chat_1', 'hi', 'idem-1')).rejects.toBeInstanceOf(
+          errors.RateLimited,
+        );
+        expect(calls).toBe(1);
+        expect(spy.calls).toEqual([]);
+      },
+    );
+  });
+
   it('falls back to the envelope retry_after when no header is present', async () => {
     let calls = 0;
     await withServer(

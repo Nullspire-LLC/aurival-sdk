@@ -47,7 +47,29 @@ export interface BotOptions {
   logger?: Logger | undefined;
   /** Silences the `aurival: …` status banners on stderr. `AURIVAL_QUIET=1` does the same. */
   quiet?: boolean | undefined;
+  /**
+   * Auto-typing (SDK-41). A command handler still running after
+   * {@link AUTO_TYPING_DELAY_MS} shows the chat "is thinking", and the
+   * indicator is cleared when the handler returns. A handler that replies
+   * inside the delay sends nothing, so a fast bot never flickers. `false`
+   * keeps typing entirely in your hands (`ctx.withTyping()`). Default `true`.
+   */
+  autoTyping?: boolean | undefined;
 }
+
+/**
+ * How long a command handler runs before the chat is told the bot is thinking
+ * (SDK-41). Long enough that an ordinary reply never trips it, short enough
+ * that a slow one reads as work in progress rather than silence.
+ */
+export const AUTO_TYPING_DELAY_MS = 300;
+
+/** The per-dispatch auto-typing timer; `stop()` is always awaited by the dispatcher. */
+interface AutoTyping {
+  stop(): Promise<void>;
+}
+
+const noAutoTyping: AutoTyping = { stop: async () => undefined };
 
 interface Registered {
   command: Command;
@@ -150,12 +172,14 @@ export class Bot {
   #errorHook: ErrorHook | null = null;
   #http: HttpClient | null = null;
   readonly #quiet: boolean;
+  readonly #autoTyping: boolean;
 
   constructor(options: BotOptions = {}) {
     this.#log = options.logger ?? defaultLogger();
     this.#host = options.host;
     this.#keyPath = options.keyPath;
     this.#quiet = status.isQuiet(options.quiet);
+    this.#autoTyping = options.autoTyping ?? true;
   }
 
   // -- registration ------------------------------------------------------
@@ -394,6 +418,7 @@ export class Bot {
     }
     if (this.#http === null) return;
     const ctx = Context.fromEvent(event, this.#http);
+    const typing = this.#startAutoTyping(ctx);
     try {
       await registered.handler(ctx);
     } catch (exc) {
@@ -402,7 +427,39 @@ export class Bot {
         `handler for ${JSON.stringify(name)} threw: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
       );
       await this.#callErrorHook(exc, ctx);
+    } finally {
+      await typing.stop();
     }
+  }
+
+  // -- auto-typing (SDK-41) ------------------------------------------------
+
+  #startAutoTyping(ctx: Context): AutoTyping {
+    if (!this.#autoTyping || ctx.chat.id === '') return noAutoTyping;
+    // Once the timer fires the start request is in flight and may already be
+    // applied server-side, so stop() awaits it and clears, rather than
+    // abandoning a request it cannot take back. Typing is best-effort: a
+    // failure is a debug line, never the reply's problem.
+    let sent: Promise<boolean> | null = null;
+    const timer = setTimeout(() => {
+      sent = ctx.typing(true).then(
+        () => true,
+        (exc: unknown) => {
+          this.#log.debug(`auto typing start failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+          return false;
+        },
+      );
+    }, AUTO_TYPING_DELAY_MS);
+    return {
+      stop: async () => {
+        clearTimeout(timer);
+        if (sent === null) return;
+        if (!(await sent)) return;
+        await ctx.typing(false).catch((exc: unknown) => {
+          this.#log.debug(`auto typing stop failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+        });
+      },
+    };
   }
 
   /**
