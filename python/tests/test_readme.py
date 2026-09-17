@@ -147,3 +147,172 @@ def test_the_readme_env_table_names_variables_that_exist(promised: str) -> None:
     assert promised in source or promised in bot_source, (
         f"the README documents {promised} and no module reads it"
     )
+
+
+# --- `## Embeds and buttons`: every example block is extracted and executed ---
+#
+# The blocks above are transcripts, and a transcript is pinned by comparing text.
+# The builder examples are not: nothing the SDK prints could be compared against
+# `Embed(title=...)`. The pin that carries weight for them is extract-and-execute
+# — pull each fenced `python` block out of the section, run it, and look at what
+# it built. "Copy-paste unchanged" means exactly that the block runs; if the
+# README's example stops building, this fails.
+#
+# The trailing `await ctx.reply(...)` line is stripped rather than stubbed: the
+# README is the product, and an example that showed a fake `ctx` to please a test
+# would be teaching the test instead of the reader.
+
+_EMBEDS_HEADING = "## Embeds and buttons"
+
+# A block is a builder example if it constructs one. Anything else in the section
+# (the `button.pressed` handler) is skipped, and the skip is itself asserted, so a
+# new builder example can never slip past by being written in an unexpected style.
+_BUILDER_MARKERS = ("Embed(", "Button(", "Button.link(")
+
+
+def _embeds_section() -> str:
+    text = README.read_text(encoding="utf-8")
+    start = text.index(_EMBEDS_HEADING)
+    end = text.index("\n## ", start + len(_EMBEDS_HEADING))
+    return text[start:end]
+
+
+def _python_blocks(section: str) -> list[str]:
+    blocks = re.findall(r"```python\n(.*?)```", section, re.DOTALL)
+    assert blocks, f"the README's {_EMBEDS_HEADING} section has no python example blocks"
+    return blocks
+
+
+def _without_awaits(src: str) -> str:
+    """Drop the `await ctx.…` usage lines. Everything that builds stays."""
+    return "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("await "))
+
+
+def _run_embeds_examples() -> tuple[list[tuple[int, object]], list[str]]:
+    """Execute every builder block and return what it built, plus the skipped blocks."""
+    from aurival import Button, Embed
+
+    built: list[tuple[int, object]] = []
+    skipped: list[str] = []
+    for index, src in enumerate(_python_blocks(_embeds_section())):
+        if not any(marker in src for marker in _BUILDER_MARKERS):
+            skipped.append(src)
+            continue
+        where = f"README.md {_EMBEDS_HEADING} python block {index}"
+        namespace: dict[str, Any] = {}
+        exec(compile(_without_awaits(src), where, "exec"), namespace)
+        for value in namespace.values():
+            for item in value if isinstance(value, (list, tuple)) else [value]:
+                if isinstance(item, (Embed, Button)):
+                    built.append((index, item))
+    assert built, "no example in the Embeds and buttons section built an Embed or a Button"
+    return built, skipped
+
+
+def _button_dicts() -> list[dict]:
+    from aurival import Button
+
+    built, _ = _run_embeds_examples()
+    return [item.to_dict() for _, item in built if isinstance(item, Button)]
+
+
+def _embed_dicts() -> list[dict]:
+    from aurival import Embed
+
+    built, _ = _run_embeds_examples()
+    return [item.to_dict() for _, item in built if isinstance(item, Embed)]
+
+
+def test_every_embeds_example_block_runs() -> None:
+    """The blocks a reader pastes. Running them is the assertion."""
+    _, skipped = _run_embeds_examples()
+    for src in skipped:
+        assert not any(marker in src for marker in _BUILDER_MARKERS), (
+            "a block that builds an Embed or a Button was skipped instead of executed:\n" + src
+        )
+
+
+def test_the_readme_link_button_example_builds_a_link_button() -> None:
+    links = [b for b in _button_dicts() if b.get("style") == "link"]
+    assert links, (
+        "no example in the Embeds and buttons section builds a link button. "
+        "`Button.link` is the sanctioned constructor and the README has to show it."
+    )
+    for button in links:
+        assert isinstance(button.get("url"), str) and button["url"].startswith("https://"), button
+    bare = [b for b in links if not b.get("emoji")]
+    assert bare, "every link button in the README carries an emoji; show one without"
+    for button in bare:
+        assert "emoji" not in button, (
+            f"a link button with no emoji serialises an emoji key anyway: {button}. "
+            "An unset field is an absent key, which is what keeps a 0.4.0 card byte-identical."
+        )
+
+
+def test_the_readme_emoji_button_example_carries_the_emoji_and_the_label() -> None:
+    with_emoji = [b for b in _button_dicts() if b.get("emoji")]
+    assert with_emoji, "no example in the Embeds and buttons section puts an emoji on a button"
+    for button in with_emoji:
+        assert button["label"], f"an emoji button in the README has no label: {button}"
+
+
+def test_the_readme_footer_icon_example_carries_text_and_icon() -> None:
+    footers = [e["footer"] for e in _embed_dicts() if isinstance(e.get("footer"), dict)]
+    iconed = [f for f in footers if f.get("icon")]
+    assert iconed, "no example in the Embeds and buttons section sets a footer icon"
+    for footer in iconed:
+        assert footer.get("text"), f"a footer icon in the README has no text beside it: {footer}"
+        assert str(footer["icon"]).startswith("https://"), footer
+
+
+def test_the_readme_linked_title_and_author_examples_carry_their_urls() -> None:
+    embeds = _embed_dicts()
+    linked_titles = [e for e in embeds if e.get("url")]
+    assert linked_titles, "no example in the Embeds and buttons section sets `url` on an embed"
+    for embed in linked_titles:
+        assert embed.get("title"), f"an embed url in the README has no title to attach to: {embed}"
+
+    authors = [e["author"] for e in embeds if isinstance(e.get("author"), dict)]
+    linked_authors = [a for a in authors if a.get("url")]
+    assert linked_authors, "no example in the Embeds and buttons section links the author line"
+    for author in linked_authors:
+        assert author.get("name"), f"an author url in the README has no name to attach to: {author}"
+
+
+def test_the_readme_no_longer_says_link_is_unsupported() -> None:
+    """0.4.0 refused `"link"`; 0.5.0 ships it. A README still saying otherwise
+    sends an author away from the feature the release exists for."""
+    section = _embeds_section()
+    assert "isn't supported" not in section, section
+    assert "is not supported yet" not in section, section
+    assert '"link"' in section or "`link`" in section, section
+
+
+def test_the_readme_caps_name_the_link_url_cap_and_the_new_style() -> None:
+    section = _embeds_section()
+    assert "2048" in section, "the caps in the README never name the 2048-character link url cap"
+    assert "`primary`, `secondary`, `danger` or `link`" in section, (
+        "the caps in the README do not list `link` as a button style"
+    )
+
+
+def test_every_readme_card_has_a_reason_to_be_a_card() -> None:
+    """Owner rule: an embed is for a reply that carries buttons, fields or an
+    image. A line of text is a line of text, and a plate around it is chrome.
+    The README's own examples are what an author copies, so they are held to it
+    — each example embed needs at least one field, an image or a thumbnail, or a
+    button sent alongside it in the same block."""
+    from aurival import Button, Embed
+
+    built, _ = _run_embeds_examples()
+    blocks_with_buttons = {index for index, item in built if isinstance(item, Button)}
+    for index, item in built:
+        if not isinstance(item, Embed):
+            continue
+        card = item.to_dict()
+        assert card.get("fields") or card.get("image") or card.get("thumbnail") or (
+            index in blocks_with_buttons
+        ), (
+            f"the embed in {_EMBEDS_HEADING} python block {index} carries no field, no image and "
+            f"no button: {card}. A card with nothing on it should be a plain text reply."
+        )

@@ -107,7 +107,7 @@ from .events import (
 )
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export

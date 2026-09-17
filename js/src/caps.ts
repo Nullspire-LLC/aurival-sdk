@@ -15,7 +15,9 @@ export const MAX_LABEL_RUNES = 24;
 export const MAX_BUTTON_ID_LENGTH = 32;
 export const MAX_TITLE_LENGTH = 256;
 export const MAX_DESCRIPTION_LENGTH = 1024;
-export const BUTTON_STYLES = ['primary', 'secondary', 'danger'] as const;
+export const MAX_BUTTON_EMOJI_RUNES = 16;
+export const MAX_LINK_URL_RUNES = 2048;
+export const BUTTON_STYLES = ['primary', 'secondary', 'danger', 'link'] as const;
 
 export type ButtonStyle = (typeof BUTTON_STYLES)[number];
 
@@ -25,11 +27,37 @@ export const CAP_TOO_MANY_BUTTONS = 'a message carries at most 5 buttons';
 export const CAP_LABEL_TOO_LONG = 'a button label is at most 24 characters';
 export const CAP_BUTTON_ID_TOO_LONG = 'a button id is at most 32 characters';
 export const CAP_DUPLICATE_BUTTON_ID = 'a button id must be unique within a message';
-export const CAP_BAD_BUTTON_STYLE = 'a button style must be one of primary, secondary, danger';
-export const CAP_LINK_STYLE_DEFERRED = 'link buttons are not supported in v1';
+export const CAP_BAD_BUTTON_STYLE =
+  'a button style must be one of primary, secondary, danger, link';
 export const CAP_TITLE_TOO_LONG = 'an embed title is at most 256 characters';
 export const CAP_DESCRIPTION_TOO_LONG = 'an embed description is at most 1024 characters';
 export const CAP_IMAGE_URL_NOT_HTTPS = 'an image url must start with https://';
+
+/**
+ * AMENDMENT-06 §5. Link targets live in structured fields, never in prose,
+ * and they answer a link mistake with a link sentence: `an image url ...`
+ * would tell a bot author to fix the wrong thing. The one sentence that
+ * names a number renders it from `MAX_LINK_URL_RUNES`, exactly as the
+ * label and title caps above render theirs, because the server's template
+ * refuses a digit literal.
+ */
+export const CAP_LINK_URL_NOT_HTTPS = 'a link url must start with https://';
+export const CAP_LINK_URL_TOO_LONG = `a link url is at most ${MAX_LINK_URL_RUNES} characters`;
+export const CAP_LINK_BUTTON_MISSING_URL = 'a link button needs a url';
+export const CAP_URL_ON_NON_LINK_BUTTON = 'only a link button carries a url';
+export const CAP_INVALID_BUTTON_EMOJI = 'a button emoji is a single unicode emoji';
+export const CAP_EMBED_URL_WITHOUT_TITLE = 'an embed url needs a title to attach to';
+export const CAP_AUTHOR_URL_WITHOUT_NAME = 'an author url needs an author name to attach to';
+export const CAP_EMBED_FOOTER_TEXT_REQUIRED = 'an embed footer needs text';
+
+/**
+ * The server's `button_missing_field` sentence, rendered for the one field
+ * an SDK caller can actually leave empty. AMENDMENT-06 §3 keeps the label
+ * required so an emoji-only pill cannot ship: a pill with no words is
+ * unreadable to a screen reader and unguessable to everyone else.
+ */
+export const CAP_BUTTON_MISSING_LABEL =
+  'Every button needs `label`. A button without one cannot be rendered or pressed.';
 
 /**
  * The SDK's own precondition, not one of the server's cap sentences: a send

@@ -1,18 +1,31 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  CAP_AUTHOR_URL_WITHOUT_NAME,
   CAP_BAD_BUTTON_STYLE,
   CAP_BUTTON_ID_TOO_LONG,
+  CAP_BUTTON_MISSING_LABEL,
   CAP_DESCRIPTION_TOO_LONG,
   CAP_DUPLICATE_BUTTON_ID,
+  CAP_EMBED_FOOTER_TEXT_REQUIRED,
+  CAP_EMBED_URL_WITHOUT_TITLE,
   CAP_IMAGE_URL_NOT_HTTPS,
+  CAP_INVALID_BUTTON_EMOJI,
   CAP_LABEL_TOO_LONG,
-  CAP_LINK_STYLE_DEFERRED,
+  CAP_LINK_BUTTON_MISSING_URL,
+  CAP_LINK_URL_NOT_HTTPS,
+  CAP_LINK_URL_TOO_LONG,
   CAP_TITLE_TOO_LONG,
   CAP_TOO_MANY_BUTTONS,
   CAP_TOO_MANY_EMBEDS,
   CAP_TOO_MANY_FIELDS,
+  CAP_URL_ON_NON_LINK_BUTTON,
   EMPTY_MESSAGE,
+  MAX_BUTTON_EMOJI_RUNES,
+  MAX_LINK_URL_RUNES,
 } from '../src/caps.js';
 import { Button, Embed, serialiseButtons, serialiseEmbeds } from '../src/embeds.js';
 import { BotContext, ButtonContext, Event, MemberContext, contextFor } from '../src/events.js';
@@ -222,8 +235,10 @@ describe('cap sentences — one case per violation', () => {
     expect(() => new Button({ label: 'x', style: 'ghost' })).toThrowError(CAP_BAD_BUTTON_STYLE);
   });
 
-  it('CAP_LINK_STYLE_DEFERRED: style "link" is refused with its own sentence, not the generic one', () => {
-    expect(() => new Button({ label: 'x', style: 'link' })).toThrowError(CAP_LINK_STYLE_DEFERRED);
+  it('style "link" is a recognised style now, refused only for its missing url', () => {
+    expect(() => new Button({ label: 'x', style: 'link' })).toThrowError(
+      CAP_LINK_BUTTON_MISSING_URL,
+    );
   });
 
   it('CAP_TITLE_TOO_LONG: a 257-char title is refused', () => {
@@ -502,4 +517,377 @@ describe('an unknown event type still yields EventContext (forward-compat door s
     const http = new HttpClient('http://x', new FakeAuth() as unknown as Auth);
     expect(contextFor(event, http)).toBeInstanceOf(ButtonContext);
   });
+});
+
+describe('AMENDMENT-06 — link buttons', () => {
+  it('Button.link builds a link pill, slugs its id and carries the url on the wire', () => {
+    const button = Button.link({ label: 'Full lineup', url: 'https://aurival.com/lineup' });
+    expect(button.toJSON()).toEqual({
+      id: 'full-lineup',
+      label: 'Full lineup',
+      style: 'link',
+      url: 'https://aurival.com/lineup',
+    });
+  });
+
+  it('Button.link takes an explicit id and an emoji', () => {
+    const button = Button.link({
+      label: 'Notes',
+      url: 'https://example.com/notes',
+      id: 'notes',
+      emoji: '\u{1F4DD}',
+    });
+    expect(button.toJSON()).toEqual({
+      id: 'notes',
+      label: 'Notes',
+      style: 'link',
+      emoji: '\u{1F4DD}',
+      url: 'https://example.com/notes',
+    });
+  });
+
+  it('CAP_LINK_BUTTON_MISSING_URL: style "link" without a url is refused, builder and raw object alike', () => {
+    expect(() => new Button({ label: 'x', style: 'link' })).toThrowError(
+      CAP_LINK_BUTTON_MISSING_URL,
+    );
+    expect(() => serialiseButtons([{ label: 'x', id: 'x', style: 'link' }])).toThrowError(
+      CAP_LINK_BUTTON_MISSING_URL,
+    );
+  });
+
+  it('CAP_URL_ON_NON_LINK_BUTTON: a url on a primary button is refused rather than dropped', () => {
+    expect(() => new Button({ label: 'x', url: 'https://aurival.com' })).toThrowError(
+      CAP_URL_ON_NON_LINK_BUTTON,
+    );
+    expect(() =>
+      serialiseButtons([{ label: 'x', id: 'x', style: 'secondary', url: 'https://aurival.com' }]),
+    ).toThrowError(CAP_URL_ON_NON_LINK_BUTTON);
+  });
+
+  it('CAP_LINK_URL_NOT_HTTPS: a link target answers with the link sentence, not the image one', () => {
+    expect(() => Button.link({ label: 'x', url: 'http://aurival.com' })).toThrowError(
+      CAP_LINK_URL_NOT_HTTPS,
+    );
+  });
+
+  it('CAP_LINK_URL_TOO_LONG: the bound counts runes, so a surrogate pair is one', () => {
+    const padding = 'a'.repeat(MAX_LINK_URL_RUNES - 'https://a.com/'.length);
+    const atTheBound = `https://a.com/${padding}`;
+    expect(() => Button.link({ label: 'x', url: atTheBound })).not.toThrow();
+    expect(() => Button.link({ label: 'x', url: `${atTheBound}a` })).toThrowError(
+      CAP_LINK_URL_TOO_LONG,
+    );
+    // 2048 runes of astral emoji are 4096 UTF-16 units and still legal.
+    const astral = `https://a.com/${'\u{1F600}'.repeat(MAX_LINK_URL_RUNES - 'https://a.com/'.length)}`;
+    expect(() => Button.link({ label: 'x', url: astral })).not.toThrow();
+  });
+
+  it('a link-only row is a legal card', () => {
+    const serialised = serialiseButtons([
+      Button.link({ label: 'One', url: 'https://aurival.com/1' }),
+      Button.link({ label: 'Two', url: 'https://aurival.com/2' }),
+    ]);
+    expect(serialised.map((b) => b['style'])).toEqual(['link', 'link']);
+  });
+
+  it('a link button round trips through toJSON/fromJSON with its url intact', () => {
+    const button = Button.link({ label: 'Notes', url: 'https://example.com/notes' });
+    expect(Button.fromJSON(button.toJSON()).toJSON()).toEqual(button.toJSON());
+  });
+});
+
+describe('AMENDMENT-06 — button emoji', () => {
+  it('an emoji rides alongside the label and does not count toward the 24-rune cap', () => {
+    const button = new Button({ label: 'a'.repeat(24), emoji: '\u{23F0}' });
+    expect(button.toJSON()).toEqual({
+      id: 'a'.repeat(24),
+      label: 'a'.repeat(24),
+      style: 'primary',
+      emoji: '\u{23F0}',
+    });
+  });
+
+  /**
+   * The server's own truth table, ported row for row from
+   * `backend-go/internal/botapi/emoji_test.go` with its case names kept, so a
+   * divergence between this SDK, the python SDK and the server is one failing
+   * row here rather than a bot author getting two different answers to the
+   * same emoji. The python SDK carries the identical table.
+   */
+  const SERVER_EMOJI_TABLE: Array<[string, string, boolean]> = [
+    // The four the amendment names as must-pass.
+    ['a plain pictograph', '\u{1F3B2}', true],
+    ['a zwj family', '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}', true],
+    ['a flag', '\u{1F1F8}\u{1F1EA}', true],
+    ['a keycap', '1\u{FE0F}\u{20E3}', true],
+
+    // The must-fail set.
+    ['two pictographs', '\u{1F3B2}\u{1F3B2}', false],
+    ['plain letters', 'ab', false],
+    ['a shortcode', ':dice:', false],
+    ['the empty string', '', false],
+    ['an ascii plus', '+', false],
+    ['a bare digit', '1', false],
+    ['half a flag', '\u{1F1F8}', false],
+    ['two flags', '\u{1F1F8}\u{1F1EA}\u{1F1F8}\u{1F1EA}', false],
+
+    // Skin tone and variation selectors ride along with one base.
+    ['a skin tone modifier', '\u{1F44D}\u{1F3FD}', true],
+    ['the emoji variation selector', '\u{2764}\u{FE0F}', true],
+    ['the text variation selector', '\u{2764}\u{FE0E}', true],
+    ['a zwj family with a skin tone', '\u{1F468}\u{1F3FB}\u{200D}\u{1F373}', true],
+
+    // A subdivision flag: a pictographic base, tag characters, cancel tag.
+    [
+      'a tag sequence flag',
+      '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}',
+      true,
+    ],
+
+    // A keycap without its enclosing mark, and one with no base at all.
+    ['a digit with a variation selector but no keycap', '1\u{FE0F}', false],
+    ['a hash keycap', '#\u{20E3}', true],
+    ['a star keycap', '*\u{FE0F}\u{20E3}', true],
+    ['a keycap mark with no base', '\u{20E3}', false],
+
+    // The ASCII symbol classes. Sm admits all of these, which is exactly why
+    // the pictographic test floors at U+0080.
+    ['an ascii less-than', '<', false],
+    ['an ascii equals', '=', false],
+    ['an ascii pipe', '|', false],
+    ['an ascii tilde', '~', false],
+    ['an ascii dollar', '$', false],
+
+    // Non-ascii symbols that ARE legal under the deliberately permissive rule.
+    ['an arrow', '\u{2192}', true],
+    ['a copyright sign', '\u{00A9}', true],
+
+    // Joiner hygiene and the outer bound.
+    ['a trailing joiner', '\u{1F468}\u{200D}', false],
+    ['a leading joiner', '\u{200D}\u{1F468}', false],
+    ['a pictograph glued to a regional indicator', '\u{1F3B2}\u{1F1F8}', false],
+    ['an overlong paste', '\u{1F3B2}\u{200D}'.repeat(MAX_BUTTON_EMOJI_RUNES), false],
+    ['prose after a pictograph', '\u{1F3B2} go', false],
+  ];
+
+  it("the table is the server's, all 33 rows of it", () => {
+    expect(SERVER_EMOJI_TABLE).toHaveLength(33);
+  });
+
+  it.each(SERVER_EMOJI_TABLE)('%s', (_name, emoji, legal) => {
+    if (legal) {
+      expect(() => new Button({ label: 'x', emoji })).not.toThrow();
+    } else {
+      expect(() => new Button({ label: 'x', emoji })).toThrowError(CAP_INVALID_BUTTON_EMOJI);
+    }
+  });
+
+  it('MAX_BUTTON_EMOJI_RUNES bounds the value before the runes are read one by one', () => {
+    // Otherwise-legal sequences either side of the bound, so the only thing
+    // that can refuse the second one is the bound itself.
+    const atTheBound = '\u{1F468}' + '\u{FE0F}'.repeat(MAX_BUTTON_EMOJI_RUNES - 1);
+    expect([...atTheBound]).toHaveLength(MAX_BUTTON_EMOJI_RUNES);
+    expect(() => new Button({ label: 'x', emoji: atTheBound })).not.toThrow();
+
+    const past = atTheBound + '\u{FE0F}';
+    expect([...past]).toHaveLength(MAX_BUTTON_EMOJI_RUNES + 1);
+    expect(() => new Button({ label: 'x', emoji: past })).toThrowError(CAP_INVALID_BUTTON_EMOJI);
+  });
+
+  it('a raw object is not a bypass for the emoji check', () => {
+    expect(() =>
+      serialiseButtons([{ label: 'x', id: 'x', style: 'primary', emoji: 'ab' }]),
+    ).toThrowError(CAP_INVALID_BUTTON_EMOJI);
+  });
+
+  it('CAP_BUTTON_MISSING_LABEL: an emoji-only button is refused for its label, not its emoji', () => {
+    expect(() => new Button({ label: '', emoji: '\u{23F0}' })).toThrowError(
+      CAP_BUTTON_MISSING_LABEL,
+    );
+    expect(() => new Button({ label: '' })).toThrowError(CAP_BUTTON_MISSING_LABEL);
+    expect(() => serialiseButtons([{ label: '', id: 'x', style: 'primary' }])).toThrowError(
+      CAP_BUTTON_MISSING_LABEL,
+    );
+  });
+});
+
+describe('AMENDMENT-06 — embed footer icon, embed url and author url', () => {
+  it('setFooter carries an icon onto the wire', () => {
+    const embed = new Embed({ title: 't' }).setFooter(
+      'set by deepcuts',
+      'https://cdn.aurival.com/dc.png',
+    );
+    expect(embed.toJSON()['footer']).toEqual({
+      text: 'set by deepcuts',
+      icon: 'https://cdn.aurival.com/dc.png',
+    });
+  });
+
+  it('CAP_IMAGE_URL_NOT_HTTPS: a footer icon is an image url and keeps the image sentence', () => {
+    expect(() => new Embed().setFooter('t', 'http://cdn.aurival.com/dc.png')).toThrowError(
+      CAP_IMAGE_URL_NOT_HTTPS,
+    );
+    expect(() =>
+      serialiseEmbeds([{ title: 't', footer: { text: 'f', icon: 'http://nope' } }]),
+    ).toThrowError(CAP_IMAGE_URL_NOT_HTTPS);
+  });
+
+  it('CAP_EMBED_FOOTER_TEXT_REQUIRED: an icon-only footer is refused on both paths', () => {
+    expect(() => new Embed().setFooter('', 'https://cdn.aurival.com/dc.png')).toThrowError(
+      CAP_EMBED_FOOTER_TEXT_REQUIRED,
+    );
+    expect(() =>
+      serialiseEmbeds([{ title: 't', footer: { icon: 'https://cdn.aurival.com/dc.png' } }]),
+    ).toThrowError(CAP_EMBED_FOOTER_TEXT_REQUIRED);
+  });
+
+  it('embed.url makes the title tappable and survives a round trip', () => {
+    const embed = new Embed({ title: "Tonight's set", url: 'https://aurival.com/spaces/deepcuts' });
+    expect(embed.toJSON()).toEqual({
+      title: "Tonight's set",
+      url: 'https://aurival.com/spaces/deepcuts',
+    });
+    expect(Embed.fromJSON(embed.toJSON()).toJSON()).toEqual(embed.toJSON());
+  });
+
+  it('CAP_EMBED_URL_WITHOUT_TITLE: a url with nothing to attach to is refused on both paths', () => {
+    expect(() => new Embed({ url: 'https://aurival.com' })).toThrowError(
+      CAP_EMBED_URL_WITHOUT_TITLE,
+    );
+    expect(() => serialiseEmbeds([{ url: 'https://aurival.com' }])).toThrowError(
+      CAP_EMBED_URL_WITHOUT_TITLE,
+    );
+    expect(() => serialiseEmbeds([{ title: '', url: 'https://aurival.com' }])).toThrowError(
+      CAP_EMBED_URL_WITHOUT_TITLE,
+    );
+  });
+
+  it('CAP_LINK_URL_NOT_HTTPS: embed.url is a link target, not an image', () => {
+    expect(() => new Embed({ title: 't', url: 'http://aurival.com' })).toThrowError(
+      CAP_LINK_URL_NOT_HTTPS,
+    );
+  });
+
+  it('setAuthor carries a url and survives a round trip', () => {
+    const embed = new Embed({ title: 't' }).setAuthor(
+      'Deep Cuts',
+      'https://cdn.aurival.com/dc.png',
+      'https://aurival.com/u/deepcuts',
+    );
+    expect(embed.toJSON()['author']).toEqual({
+      name: 'Deep Cuts',
+      icon: 'https://cdn.aurival.com/dc.png',
+      url: 'https://aurival.com/u/deepcuts',
+    });
+    expect(Embed.fromJSON(embed.toJSON()).toJSON()).toEqual(embed.toJSON());
+  });
+
+  it('CAP_AUTHOR_URL_WITHOUT_NAME: an author url with no name is refused on both paths', () => {
+    expect(() => new Embed().setAuthor('', undefined, 'https://aurival.com')).toThrowError(
+      CAP_AUTHOR_URL_WITHOUT_NAME,
+    );
+    expect(() =>
+      serialiseEmbeds([{ title: 't', author: { url: 'https://aurival.com' } }]),
+    ).toThrowError(CAP_AUTHOR_URL_WITHOUT_NAME);
+  });
+
+  it('CAP_LINK_URL_NOT_HTTPS: an author url is a link target, not an image', () => {
+    expect(() => new Embed().setAuthor('Deep Cuts', undefined, 'http://aurival.com')).toThrowError(
+      CAP_LINK_URL_NOT_HTTPS,
+    );
+  });
+});
+
+describe('AMENDMENT-06 §9 — a card with none of the new fields is byte-identical to today', () => {
+  it('no url, emoji or footer icon key appears anywhere, and none is emitted as null', () => {
+    const embeds = serialiseEmbeds([
+      new Embed({ title: 'Trivia round 4', description: 'Which ocean is the deepest?' })
+        .setAuthor('Quizbot', 'https://cdn.aurival.com/q.png')
+        .addField('Players', '6', true)
+        .setFooter('Answer within 30s'),
+    ]);
+    const buttons = serialiseButtons([new Button({ label: 'Pacific' })]);
+
+    expect(embeds).toEqual([
+      {
+        title: 'Trivia round 4',
+        description: 'Which ocean is the deepest?',
+        author: { name: 'Quizbot', icon: 'https://cdn.aurival.com/q.png' },
+        fields: [{ name: 'Players', value: '6', inline: true }],
+        footer: { text: 'Answer within 30s' },
+      },
+    ]);
+    expect(buttons).toEqual([{ id: 'pacific', label: 'Pacific', style: 'primary' }]);
+    expect(JSON.stringify({ embeds, buttons })).not.toContain('null');
+    expect(JSON.stringify({ embeds, buttons })).not.toContain('"url"');
+    expect(JSON.stringify({ embeds, buttons })).not.toContain('"emoji"');
+  });
+});
+
+/**
+ * AMENDMENT-06 §5 fixes the eight new sentences in a table and says they are
+ * to be copied byte for byte into this SDK. This reads that table back and
+ * compares, so a reworded sentence here is a failing test rather than a
+ * mismatch a bot author discovers by getting two different wordings from the
+ * two sides of the same refusal.
+ *
+ * `sdk/` is copied wholesale into the public mirror repo, where
+ * `docs/engineering/` does not exist — so the file's absence skips this test
+ * rather than reddening the mirror's CI.
+ */
+const AMENDMENT_PATH = fileURLToPath(
+  new URL('../../../docs/engineering/bot-api/AMENDMENT-06.md', import.meta.url),
+);
+
+describe('AMENDMENT-06 §5 sentence parity', () => {
+  it.skipIf(!existsSync(AMENDMENT_PATH))(
+    'every new cap sentence matches the amendment character for character',
+    () => {
+      const doc = readFileSync(AMENDMENT_PATH, 'utf8');
+      const expected: Record<string, string> = {
+        link_url_not_https: CAP_LINK_URL_NOT_HTTPS,
+        link_url_too_long: CAP_LINK_URL_TOO_LONG,
+        link_button_missing_url: CAP_LINK_BUTTON_MISSING_URL,
+        url_on_non_link_button: CAP_URL_ON_NON_LINK_BUTTON,
+        invalid_button_emoji: CAP_INVALID_BUTTON_EMOJI,
+        embed_url_without_title: CAP_EMBED_URL_WITHOUT_TITLE,
+        author_url_without_name: CAP_AUTHOR_URL_WITHOUT_NAME,
+        embed_footer_text_required: CAP_EMBED_FOOTER_TEXT_REQUIRED,
+      };
+
+      const rows = new Map<string, string>();
+      for (const line of doc.split('\n')) {
+        const match = /^\|\s*`([a-z_]+)`\s*\|\s*`(.+?)`\s*\|$/.exec(line.trim());
+        if (match && match[1] !== undefined && match[2] !== undefined) {
+          if (match[1] in expected) rows.set(match[1], match[2]);
+        }
+      }
+
+      expect([...rows.keys()].sort()).toEqual(Object.keys(expected).sort());
+      for (const [code, sentence] of rows) {
+        // The doc templates the one sentence that names a number; the SDK
+        // renders it from the constant, as it does every other numeric cap.
+        const rendered = sentence.replace('{max}', String(MAX_LINK_URL_RUNES));
+        expect(rendered).toBe(expected[code]);
+      }
+    },
+  );
+
+  it.skipIf(!existsSync(AMENDMENT_PATH))(
+    'the changed button-style sentence matches §5 and the retired one is gone from src/',
+    () => {
+      const doc = readFileSync(AMENDMENT_PATH, 'utf8');
+      expect(doc).toContain(CAP_BAD_BUTTON_STYLE);
+      expect(CAP_BAD_BUTTON_STYLE).toBe(
+        'a button style must be one of primary, secondary, danger, link',
+      );
+
+      const srcDir = fileURLToPath(new URL('../src/', import.meta.url));
+      const sources = readdirSync(srcDir)
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => readFileSync(join(srcDir, name), 'utf8'))
+        .join('\n');
+      expect(sources).not.toContain('link buttons are not supported in v1');
+    },
+  );
 });

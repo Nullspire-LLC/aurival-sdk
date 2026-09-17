@@ -265,9 +265,9 @@ the token, not because the other forms are wrong. Every entry in `mentions` need
 `Embed` is a builder: `Embed(title=..., description=..., color=...)` gives you the starting
 card, and every `add_field`/`set_author`/`set_thumbnail`/`set_footer` call returns the same
 `Embed`, so you chain them straight into the constructor call. `Button(label, id=..., style=...)`
-is a separate, flat object — `style` is one of `"primary" | "secondary" | "danger"`; `"link"`
-isn't supported yet, and passing it raises a plain `ValueError` naming the bad style. Pass
-lists of both straight into `ctx.reply()` or `ctx.send()`:
+is a separate, flat object — `style` is one of `"primary" | "secondary" | "danger" | "link"`,
+and anything else raises a plain `ValueError` naming the bad style. Pass lists of both straight
+into `ctx.reply()` or `ctx.send()`:
 
 ```python
 from aurival import Embed, Button
@@ -288,10 +288,149 @@ buttons = [
 await ctx.reply("Ready when you are.", embeds=[embed], buttons=buttons)
 ```
 
-There are caps, and the SDK checks them locally before the frame ever goes out, so a bad bot
-fails fast with a plain error naming which cap it hit: a message carries at most 3 embeds, an
-embed at most 6 fields, a message at most 5 buttons, and a button label is at most 24
-characters.
+A card earns its place when there is something to put on it: buttons, fields, an image. A reply
+that one line of text covers — a coin flip, a joke, a status line — reads better as that line,
+and a plate wrapped around it is chrome the reader has to look past.
+
+### A button that opens a link
+
+`Button.link(label, url)` builds a pill that opens a url instead of coming back to your bot.
+It is the only sanctioned way to build one — `style="link"` on the plain constructor without a
+url raises, because a link button with nowhere to go is a dead pill:
+
+```python
+from aurival import Button
+
+buttons = [
+    Button.link("Full lineup", "https://aurival.com/spaces/deepcuts/lineup"),
+    Button.link("Set notes", "https://example.com/notes"),
+    Button("Remind me", id="remind", style="primary"),
+]
+await ctx.reply("Doors at 21:00.", buttons=buttons)
+```
+
+A link button never comes back to you: no `button.pressed` event, ever, and it never flips the
+row to used. It also stays tappable after a sibling is pressed, and while a sibling is still
+waiting on your `ack()` — the row greys out around it, the link does not. `id` still has to be
+there and still has to be unique in the message, and the SDK still slugs it from the label when
+you leave it out, so `Button.link("Set notes", ...)` gets `id="set-notes"` like any other button.
+Link buttons count toward the five-button cap, and a message made only of link buttons is fine.
+
+A url is `https://` and at most 2048 characters, everywhere a url is a link target. A non-link
+button must not carry a `url`, and passing one raises rather than being quietly dropped — a typo
+you cannot see is worse than an error you can.
+
+### Emoji on a button
+
+`emoji=` puts one glyph in front of the label, inside the pill:
+
+```python
+from aurival import Button
+
+buttons = [
+    Button("Maybe", id="maybe", style="secondary", emoji="🤔"),
+    Button("Remind me", id="remind", style="primary", emoji="⏰"),
+]
+await ctx.reply("Set starts in an hour.", buttons=buttons)
+```
+
+Exactly one unicode emoji, no custom emoji, no `:shortcode:`, no image url. The emoji does not
+count toward the 24-character label cap — it is its own field, and folding it into the label
+count would make one cap mean two things. The label is still required, so there is no
+emoji-only button: a pill with no words is unguessable to everyone and unreadable to a screen
+reader.
+
+### A footer icon, a linked title, a linked author
+
+`set_footer(text, icon=...)` puts a small image beside the footer text, `url=` on the embed
+makes its title tappable, and `url=` on `set_author` does the same for the author line:
+
+```python
+from aurival import Embed
+
+embed = (
+    Embed(
+        title="Tonight's set",
+        description="Deep cuts only, and nothing after midnight.",
+        color="#3E6E8E",
+        url="https://aurival.com/spaces/deepcuts",
+    )
+    .set_author(
+        "Deep Cuts",
+        icon="https://cdn.aurival.com/dc.png",
+        url="https://aurival.com/u/deepcuts",
+    )
+    .set_thumbnail("https://cdn.aurival.com/cover.jpg")
+    .set_footer("set by deepcuts", icon="https://cdn.aurival.com/dc-small.png")
+)
+await ctx.reply("Tonight's lineup.", embeds=[embed])
+```
+
+Each of the three needs the thing it attaches to: a footer icon needs footer text, an embed url
+needs a title to hang the tap on, and an author url needs an author name. Without them there is
+nothing for a reader to press, and dropping the url silently would fail where nobody could see
+it.
+
+### Markdown in the description
+
+The description is rendered as markdown. Nothing else on the card is — title, field names, field
+values, footer text and author name are all plain text, so a `**bold**` in a field name arrives
+as four asterisks and two words:
+
+```python
+from aurival import Embed
+
+embed = Embed(
+    title="House rules",
+    description=(
+        "**Deep cuts** only. No *requests* after the ~~third~~ second hour.\n"
+        "Type `!queue` to see what is next."
+    ),
+).add_field("Set length", "3 hours", inline=True)
+await ctx.reply("Welcome in.", embeds=[embed])
+```
+
+Supported: bold, italic, bold-italic, strikethrough and inline code. Headings render as bold
+text at body size rather than as larger type, because a card is not a document. Not supported:
+images, tables, code panels and autolink — a fenced block renders as plain styled text, not a
+panel, and a bare URL never becomes a tap target.
+
+The 1024-character description cap counts the raw markdown source you typed, not what the reader
+sees, so the asterisks and backticks are part of your budget.
+
+A markdown link (`[label](https://…)`) or a bare URL is still refused inside the description, and
+inside every other prose field with it. Links live in the structured url fields above, where the
+client knows the target before it paints — in prose, a label can say one thing and go somewhere
+else.
+
+### Where a link goes, and what the reader sees first
+
+A tap on a link button, a linked title or a linked author that points outside Aurival shows the
+reader a leaving notice naming the host before anything opens, so nobody hands their IP to a
+stranger by pressing a pill that looked friendly. The host on the notice is read off the real
+url, so what they are shown is what opens. An `aurival.com` link skips the notice and opens in
+the app, because it never left.
+
+### Caps
+
+The SDK checks every cap locally before the frame goes out, so a bad bot fails fast with a plain
+error naming which cap it hit.
+
+| cap | limit |
+|---|---|
+| embeds per message | 3 |
+| fields per message | 6, summed across every embed |
+| buttons per message | 5 |
+| button label | 24 characters, emoji not counted |
+| button emoji | exactly one unicode emoji |
+| button style | `primary`, `secondary`, `danger` or `link` |
+| embed description | 1024 characters of raw markdown |
+| link url (button, title, author) | 2048 characters, `https://` only |
+| image url (thumbnail, image, author icon, footer icon) | `https://` only, no length cap |
+
+One convention, which is ours and not a rule: when one button is the one you want pressed, put
+it last. The server and the client never reorder a row — your order is the order the reader
+sees — so this is a habit the docs suggest, not something enforced anywhere.
 
 A press comes back as a `button.pressed` event, handled the same way any other event is:
 
@@ -324,6 +463,22 @@ code reading other `Message` fields is unaffected.
 
 `@bot.on("button.pressed")` is a new event a bot can opt into; a bot that never registers a
 handler for it simply never receives one.
+
+## Upgrading from 0.4.x
+
+Everything 0.5.0 adds to a card is optional: `url=` on `Embed` and on `set_author`, `icon=` on
+`set_footer`, `emoji=` and `url=` on `Button`, and the `Button.link` constructor. A card that
+uses none of them serialises exactly as it did on 0.4.0 — same keys, same bytes, no `"url":
+null` where there was nothing before — so a bot you wrote against 0.4.0 needs no edit at all.
+
+`"link"` is a real button style now, where 0.4.0 refused it with `link buttons are not supported
+in v1`. Build one with `Button.link(label, url)`; that classmethod is the sanctioned constructor, and it sets the
+style for you.
+
+A link button is not an action button wearing a url. It never produces a `button.pressed` event,
+it never flips `used`, and it is not disabled by a sibling being pending or used — so a row can
+go cold around a link and the link still works. If you were counting on every button in a row
+answering back, count only the ones you did not build with `Button.link`.
 
 ## Shadowed commands
 
