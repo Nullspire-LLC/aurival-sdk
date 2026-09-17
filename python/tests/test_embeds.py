@@ -49,6 +49,7 @@ from aurival.caps import (
     MAX_LINK_URL_RUNES,
     MAX_TITLE_LENGTH,
 )
+from aurival import http
 from aurival.embeds import Button, ButtonUsed, Embed, serialise_buttons, serialise_embeds
 from aurival.events import ButtonContext, Chat, Context, Event, User, _message_from_wire
 
@@ -103,7 +104,16 @@ class _RecordingHttp:
         )
         return {"object": "message", "id": "msg_new"}
 
-    async def ack_interaction(self, interaction: str) -> dict:
+    async def ack_interaction(
+        self,
+        interaction: str,
+        text: str | None = None,
+        *,
+        embeds: object = http.OMITTED,
+        buttons: object = http.OMITTED,
+    ) -> dict:
+        # AMENDMENT-07 §3 gave ack an optional body; this stub mirrors the new
+        # arity. What each part puts on the wire is pinned in test_messages.py.
         self.acked.append(interaction)
         return {}
 

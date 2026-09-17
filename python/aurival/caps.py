@@ -53,3 +53,11 @@ CAP_BUTTON_MISSING_LABEL = (
 # with no text, no embeds and no buttons has nothing to deliver, so it is
 # refused here rather than sent for the server to refuse as empty text.
 EMPTY_MESSAGE = "a message needs text, embeds or buttons"
+
+# The same precondition for the edit door (AMENDMENT-07 §9): `None` means "not
+# present" on every part of an edit, so an edit naming none of the three parts
+# has nothing to change and is refused here rather than sent. The sentence is
+# copied verbatim from AMENDMENT-07 §7's `nothing_to_edit` row, because L1 has
+# not landed that row in `errors_v1.go` yet — when it does, this constant and
+# the Go catalogue must stay byte-identical.
+NOTHING_TO_EDIT = "an edit needs text, embeds or buttons"

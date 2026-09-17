@@ -129,6 +129,7 @@ const EXPECTED = [
   'MentionTokenMissing',
   'MessageNotYours',
   'NotFound',
+  'NothingToEdit',
   'PairRateLimited',
   'ParameterInvalid',
   'ParameterMissing',
@@ -168,8 +169,10 @@ describe('the public surface', () => {
   // AMENDMENT-05 §2 then added fifteen error classes for the card's caps and
   // per-field refusals, all mirrored in both SDKs — 90 mirrored names plus
   // `MentionLike`.
-  it('is exactly the 98 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(99);
+  // AMENDMENT-07 §7 then adds `NothingToEdit`, mirrored in both SDKs — 99
+  // mirrored names plus `MentionLike`, 100 total.
+  it('is exactly the 99 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(100);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -246,6 +249,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.5.0');
+    expect(aurival.version).toBe('0.6.0');
   });
 });

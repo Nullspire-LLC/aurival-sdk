@@ -21,7 +21,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
-from .caps import EMPTY_MESSAGE
+from .caps import EMPTY_MESSAGE, NOTHING_TO_EDIT
 from .embeds import (
     Button,
     ButtonLike,
@@ -32,6 +32,7 @@ from .embeds import (
     serialise_embeds,
 )
 from .errors import AurivalError
+from .http import OMITTED, Omitted
 
 if TYPE_CHECKING:
     from aurival.http import HttpClient
@@ -240,6 +241,34 @@ def _require_something_to_say(
         raise ValueError(EMPTY_MESSAGE)
 
 
+def _embeds_part(embeds: list[EmbedLike] | None) -> list[dict[str, object]] | Omitted | None:
+    """Turn the `embeds` a caller passed to `edit`/`ack` into one of the three
+    states the wire knows (AMENDMENT-07 §9).
+
+    `None` means the caller never named the part, so it is `OMITTED` and the
+    key never reaches the body. `[]` is the SDK's spelling of "clear", so it
+    becomes a real `None` and goes out as `"embeds": null`. The empty case has
+    to be decided here, on the caller's own list, rather than after
+    serialising: `serialise_embeds([])` returns `[]`, not `None`, so a clear
+    routed through it would be indistinguishable from "nothing to send".
+    """
+    if embeds is None:
+        return OMITTED
+    if not embeds:
+        return None
+    return serialise_embeds(embeds)
+
+
+def _buttons_part(buttons: list[ButtonLike] | None) -> list[dict[str, object]] | Omitted | None:
+    """`_embeds_part` for the button row: `None` omits, `[]` clears the row to
+    `"buttons": null`, a non-empty list is serialised exactly as `send` does."""
+    if buttons is None:
+        return OMITTED
+    if not buttons:
+        return None
+    return serialise_buttons(buttons)
+
+
 def _ref_id(x: object) -> str:
     """Accepts a bare id string or anything with a plain `.id` attribute
     (`Message`, `Chat`) — the shape every action method below takes for its
@@ -404,12 +433,37 @@ class BaseContext:
 
         return _cm()
 
-    async def edit(self, msg: Message | str, text: str) -> Message:
-        """Replace the text of a message the bot sent — `ctx.edit(sent,
+    async def edit(
+        self,
+        msg: Message | str,
+        text: str | None = None,
+        *,
+        embeds: list[EmbedLike] | None = None,
+        buttons: list[ButtonLike] | None = None,
+    ) -> Message:
+        """Replace part of a message the bot sent — `ctx.edit(sent,
         "corrected")` where `sent` is what `reply()` or `send()` returned, or
         its id. Only the bot's own messages: editing anyone else's answers
-        `MessageNotYours`. Returns the updated `Message`."""
-        return _message_from_wire(await self._http.edit_message(_ref_id(msg), text))
+        `MessageNotYours`. Returns the updated `Message`.
+
+        `text`, `embeds` and `buttons` are each optional and each replaces only
+        the part it names; a part you leave out is kept as it is, so a
+        countdown card can rewrite its embed without restating its buttons
+        (AMENDMENT-07 §2). `None` means "not present", which is why it cannot
+        also mean "clear": **an empty list clears**, so `embeds=[]` takes the
+        embeds off the card and `buttons=[]` takes the row off. `text=""` is a
+        real value, not an absence — a card may carry empty text, and only an
+        edit whose merged result has nothing left in it is refused as empty.
+        Naming none of the three is refused here, before the round trip."""
+        if text is None and embeds is None and buttons is None:
+            raise ValueError(NOTHING_TO_EDIT)
+        response = await self._http.edit_message(
+            _ref_id(msg),
+            text,
+            embeds=_embeds_part(embeds),
+            buttons=_buttons_part(buttons),
+        )
+        return _message_from_wire(response)
 
     async def delete(self, msg: Message | str) -> None:
         """Delete a message the bot sent, by `Message` or id. Only the bot's
@@ -589,12 +643,32 @@ class ButtonContext(BaseContext):
     def _quotes(self) -> str | None:
         return self.message.id or None
 
-    async def ack(self) -> None:
+    async def ack(
+        self,
+        text: str | None = None,
+        *,
+        embeds: list[EmbedLike] | None = None,
+        buttons: list[ButtonLike] | None = None,
+    ) -> None:
         """Acknowledge the button press — `POST /v1/interactions/{id}/ack`,
         204 no body. The interaction id sent is `self.interaction` verbatim,
         the `button.pressed` event's own id (AMENDMENT-05 §3) — no prefix
-        rewriting."""
-        await self._http.ack_interaction(self.interaction)
+        rewriting.
+
+        Pass any of `text`, `embeds` or `buttons` and the same request also
+        replaces the card the button was on, so a question card becomes its
+        result card in one write instead of a second message stacking under it
+        (AMENDMENT-07 §3). The clearing rule is `edit`'s: `None` is "not
+        present", an empty list clears that part, and a fresh `buttons` row
+        starts unused. An ack carrying a card never marks the message edited.
+        `ctx.ack()` with no arguments sends no body at all and is
+        byte-identical to what 0.5.0 sent."""
+        await self._http.ack_interaction(
+            self.interaction,
+            text,
+            embeds=_embeds_part(embeds),
+            buttons=_buttons_part(buttons),
+        )
 
 
 class EventContext(BaseContext):

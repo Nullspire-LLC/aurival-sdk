@@ -155,6 +155,18 @@ class TooManyProblems(InvalidRequestError):
     """
 
 
+class NothingToEdit(InvalidRequestError):
+    """`nothing_to_edit`: a `PATCH /v1/messages/{msg}` whose body carries none
+    of `text`, `embeds` or `buttons`.
+
+    Ships ahead of its Go row on AMENDMENT-07 §7's authority — the same bet
+    `TooManyProblems` made and won: the catalogue row is ruled, L1 has not
+    landed `errors_v1.go`'s entry yet, and landing it later is a no-op here.
+    Until then the SDK refuses this case itself, with §7's sentence verbatim
+    (`caps.NOTHING_TO_EDIT`), as a `ValueError` before the round trip.
+    """
+
+
 class BotSuspended(PermissionDeniedError): ...
 
 
@@ -398,6 +410,8 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     "embed_empty": EmbedEmpty,
     "buttons_without_message": ButtonsWithoutMessage,
     "button_already_used": ButtonAlreadyUsed,
+    # AMENDMENT-07 §7: no wire sender at HEAD. See NothingToEdit.
+    "nothing_to_edit": NothingToEdit,
 }
 
 

@@ -498,6 +498,67 @@ it never flips `used`, and it is not disabled by a sibling being pending or used
 go cold around a link and the link still works. If you were counting on every button in a row
 answering back, count only the ones you did not build with `Button.link`.
 
+### Upgrading from 0.5.x
+
+0.6.0 adds optional fields in two places and takes nothing away. `ctx.edit()` takes an init
+object next to the message, and `ctx.ack()` takes one too, so a press can answer by replacing the
+card it was pressed on instead of stacking a second message under it. A bot written against
+0.5.0 needs no edit at all: `await ctx.edit(sent, 'done!')` still takes a plain string, and a
+bare `await ctx.ack()` sends exactly the bytes it sent before.
+
+Three states, one rule, on both doors:
+
+- leave a field out and that part of the card is kept as it was
+- pass a value and that part is replaced
+- pass `[]` or `null` and that part is cleared — both go on the wire as `"embeds": null`
+
+`text` is not clearable, because a card always carries text and `''` already means empty. An edit
+with all three left out throws `an edit needs text, embeds or buttons` before anything is sent,
+and the server answers the same sentence as `NothingToEdit`.
+
+A trivia round is the whole feature in one pair of handlers. Both cards earn their plate: the
+question card carries buttons, the result card carries a field.
+
+```ts
+import { Button, Embed } from 'aurival';
+
+bot.command('trivia', async (ctx) => {
+  await ctx.reply({
+    embeds: [new Embed({ title: 'Which planet is largest?' })],
+    buttons: [
+      new Button({ label: 'Mars', style: 'secondary' }),
+      new Button({ label: 'Jupiter', style: 'secondary' }),
+    ],
+  });
+});
+
+bot.on('button.pressed', async (ctx) => {
+  const correct = ctx.button === 'jupiter';
+  const result = new Embed({
+    title: correct ? 'Jupiter' : 'Not quite',
+    description: 'Jupiter is about eleven Earths across.',
+  }).addField('Answered by', ctx.user.handle, true);
+  await ctx.ack({
+    embeds: [result],
+    buttons: [new Button({ id: 'again', label: 'Play again' })],
+  });
+});
+```
+
+The ack and the replacement are one request. The question card becomes the result card in place,
+the `Play again` row starts unused, and the message is not marked edited — an interaction
+response is the bot answering the presser, not the author correcting themselves. Reusing button
+ids across replacements is allowed and safe: the server keys the refusal on the interaction, not
+on the id.
+
+`edit()` is the other door and it does mark the message edited, so a card can redraw itself
+outside a press:
+
+```ts
+await ctx.edit(sent, { embeds: [new Embed({ title: 'Starting in 3…' })] });
+await ctx.edit(sent, { buttons: [] });   // the row is gone, the plate stays
+```
+
 ## Shadowed commands
 
 A bot can declare up to 50 commands, the SDK refuses to connect past that.

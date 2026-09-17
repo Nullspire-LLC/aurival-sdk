@@ -936,12 +936,15 @@ describe('convenience method wiring', () => {
     );
   });
 
+  // AMENDMENT-07 §2 made the body three-state, so `editMessage` now takes the
+  // parts rather than a bare string. The text-only body it produces is
+  // unchanged from 0.5.0.
   it('editMessage PATCHes /v1/messages/{msg} with {text}', async () => {
     await withServer(
       (_req, res) => sendJson(res, 200, { object: 'message', id: 'msg_1', text: 'new' }),
       async ({ url, requests }) => {
         const client = new HttpClient(url, asAuth(new FakeAuth()));
-        const result = await client.editMessage('msg_1', 'new');
+        const result = await client.editMessage('msg_1', { text: 'new' });
         expect(result).toEqual({ object: 'message', id: 'msg_1', text: 'new' });
         const req = requests[0];
         if (req === undefined) throw new Error('expected a request');

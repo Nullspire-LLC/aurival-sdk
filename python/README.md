@@ -486,6 +486,64 @@ it never flips `used`, and it is not disabled by a sibling being pending or used
 go cold around a link and the link still works. If you were counting on every button in a row
 answering back, count only the ones you did not build with `Button.link`.
 
+## Upgrading from 0.5.x
+
+0.6.0 adds keyword arguments in two places and takes nothing away. `ctx.edit` gained `embeds=`
+and `buttons=` next to `text`, and `ctx.ack()` gained all three, so a press can answer by
+replacing the card it was pressed on instead of stacking a second message under it. A bot
+written against 0.5.0 needs no edit at all: `await ctx.edit(sent, "done")` and a bare `await
+ctx.ack()` send exactly the bytes they sent before.
+
+Three states, one rule, on both doors:
+
+- leave an argument out and that part of the card is kept as it was
+- pass a value and that part is replaced
+- pass an empty list and that part is cleared — `embeds=[]` goes on the wire as `"embeds": null`
+
+`None` already means "not present", so it cannot also mean "clear"; the empty list is the clear.
+`text` is not clearable, because a card always carries text and `""` already means empty. An edit
+with all three left out raises `ValueError("an edit needs text, embeds or buttons")` before
+anything is sent, and the server answers the same sentence as `NothingToEdit`.
+
+A trivia round is the whole feature in one pair of handlers. Both cards earn their plate: the
+question card carries buttons, the result card carries a field.
+
+```python
+from aurival import Button, ButtonContext, Embed
+
+@bot.command("trivia")
+async def trivia(ctx: Context) -> None:
+    await ctx.reply(
+        embeds=[Embed(title="Which planet is largest?")],
+        buttons=[
+            Button("Mars", style="secondary"),
+            Button("Jupiter", style="secondary"),
+        ],
+    )
+
+@bot.on("button.pressed")
+async def answered(ctx: ButtonContext) -> None:
+    result = Embed(title="Jupiter", description="Correct. It is about eleven Earths across.")
+    if ctx.button != "jupiter":
+        result = Embed(title="Not quite", description="Jupiter is about eleven Earths across.")
+    result.add_field("Answered by", ctx.user.handle, inline=True)
+    await ctx.ack(embeds=[result], buttons=[Button("Play again", id="again")])
+```
+
+The ack and the replacement are one request. The question card becomes the result card in place,
+the `Play again` row starts unused, and the message is not marked edited — an interaction
+response is the bot answering the presser, not the author correcting themselves. Reusing button
+ids across replacements is allowed and safe: the server keys the refusal on the interaction, not
+on the id.
+
+`edit` is the other door and it does mark the message edited, so a card can redraw itself outside
+a press:
+
+```python
+await ctx.edit(sent, embeds=[Embed(title="Starting in 3…")])
+await ctx.edit(sent, buttons=[])   # the row is gone, the plate stays
+```
+
 ## Shadowed commands
 
 Every `run()` syncs your command list, and the server answers with the chats where another

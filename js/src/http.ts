@@ -63,6 +63,32 @@ export interface RequestOptions {
   retryAuth?: boolean | undefined;
 }
 
+/**
+ * The three card parts an edit (AMENDMENT-07 §2) or an ack body (§3) may
+ * carry, already serialised by the caller. `undefined` / an absent key means
+ * "not present"; `null` means "clear this part"; an array is the replacement.
+ * `text` has no `null` state — §2: "`text` is not clearable by `null`".
+ */
+export interface CardParts {
+  text?: string | undefined;
+  embeds?: Record<string, unknown>[] | null | undefined;
+  buttons?: Record<string, unknown>[] | null | undefined;
+}
+
+/**
+ * Turns `CardParts` into the request body, preserving all three states: a key
+ * whose value is `undefined` is left OFF the object (so `JSON.stringify` never
+ * has to decide), and `null` is written through as `null`. `text: ''` survives
+ * because the test is `!== undefined`, not truthiness.
+ */
+function cardPartsBody(parts: CardParts): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (parts.text !== undefined) body['text'] = parts.text;
+  if (parts.embeds !== undefined) body['embeds'] = parts.embeds;
+  if (parts.buttons !== undefined) body['buttons'] = parts.buttons;
+  return body;
+}
+
 /** A non-JSON body, or JSON that is not an object, is a `ProtocolError`. */
 function decodeObject(raw: string): Record<string, unknown> {
   let data: unknown;
@@ -270,9 +296,28 @@ export class HttpClient {
     });
   }
 
-  async editMessage(message: string, text: string): Promise<Record<string, unknown>> {
+  /**
+   * `PATCH /v1/messages/{msg}` (AMENDMENT-07 §2). Every part is THREE-STATE and
+   * the three states are distinguished by JavaScript's own two empties, so the
+   * `if (x?.length)` shape `sendMessage` uses above must NOT be copied here —
+   * it collapses "clear this part" into "leave it alone".
+   *
+   * - key absent from `parts` (or `undefined`) -> key ABSENT from the body,
+   *   which §2 reads as "keep that part"
+   * - `null` -> `"embeds": null` on the wire, which §2 reads as "clear it"
+   * - an array -> that array, serialised exactly as `send` serialises it
+   *
+   * `text: ''` is a PRESENT value here, never an omission: §2 moved the empty
+   * check onto the MERGED card, so empty text with surviving embeds is legal.
+   * The caller (`Context.edit`) refuses an all-absent body before this is
+   * reached, so the body is never `{}`.
+   */
+  async editMessage(
+    message: string,
+    parts: CardParts,
+  ): Promise<Record<string, unknown>> {
     return this.request('PATCH', `/v1/messages/${message}`, {
-      body: { text },
+      body: cardPartsBody(parts),
       idempotencyKey: randomUUID(),
     });
   }
@@ -294,11 +339,24 @@ export class HttpClient {
     });
   }
 
-  /** `POST /v1/interactions/{interaction}/ack` -> 204, no body. `interaction` is the `button.pressed` event id (`evt_…`), unrewritten. */
-  async ackInteraction(interaction: string): Promise<void> {
-    await this.request('POST', `/v1/interactions/${interaction}/ack`, {
-      idempotencyKey: randomUUID(),
-    });
+  /**
+   * `POST /v1/interactions/{interaction}/ack` -> 204. `interaction` is the
+   * `button.pressed` event id (`evt_…`), unrewritten.
+   *
+   * `parts` is AMENDMENT-07 §3's optional body, three-state exactly as
+   * `editMessage`'s. **An ack with nothing in it sends NO BODY AT ALL** — not
+   * `{}` — so `ctx.ack()` is byte-identical to 0.5.0's, headers included:
+   * `request()` only sets `content-type` and a request body when
+   * `options.body !== undefined`, so the key is left off rather than set to an
+   * empty object.
+   */
+  async ackInteraction(interaction: string, parts?: CardParts): Promise<void> {
+    const options: RequestOptions = { idempotencyKey: randomUUID() };
+    if (parts !== undefined) {
+      const body = cardPartsBody(parts);
+      if (Object.keys(body).length > 0) options.body = body;
+    }
+    await this.request('POST', `/v1/interactions/${interaction}/ack`, options);
   }
 
   /** GET, so no idempotency key — reads are never retried-as-a-write. */

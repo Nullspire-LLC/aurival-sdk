@@ -103,6 +103,16 @@ export class AckUnknownEvent extends InvalidRequestError {}
 export class TooManyProblems extends InvalidRequestError {}
 
 /**
+ * `nothing_to_edit` (AMENDMENT-07 §7): a PATCH body carrying none of `text`,
+ * `embeds` or `buttons`. This class SHIPS AHEAD of the Go row — L1 has not
+ * landed `errors_v1.go`'s entry yet — on AMENDMENT-07 §7's authority, which
+ * pins the code, the 400 status and the sentence. It follows the
+ * `TooManyProblems` precedent above: a real row rather than a placeholder, so
+ * the refusal surfaces as its own class the day the backend deploys.
+ */
+export class NothingToEdit extends InvalidRequestError {}
+
+/**
  * `reaction_emoji_too_long` — the emoji argument to `react()`/`unreact()`
  * exceeded the server's >32-byte length clamp (AMENDMENT-04 A-2). This is a
  * size limit, not an allowlist check — there is no disallowed-emoji list to
@@ -289,6 +299,7 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   unknown_operation: UnknownOperation,
   ack_unknown_event: AckUnknownEvent,
   too_many_problems: TooManyProblems,
+  nothing_to_edit: NothingToEdit,
   reaction_emoji_too_long: ReactionEmojiTooLong,
   mention_not_member: MentionNotMember,
   mention_token_missing: MentionTokenMissing,

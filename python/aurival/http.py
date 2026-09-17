@@ -25,6 +25,49 @@ DEFAULT_HOST = "https://bots.aurival.com"
 _AURIVAL_DEBUG_ENV = "AURIVAL_DEBUG"
 
 
+class Omitted:
+    """The third state a card part on an edit or an ack can be in.
+
+    AMENDMENT-07 §9 gives `embeds`/`buttons` three meanings and `None` is
+    already spent on two of them: absent from the request body, and the JSON
+    `null` that clears the part. `send_message`'s `if embeds:` shortcut cannot
+    express that — it folds "clear" into "absent" — so the body builders below
+    test against this sentinel instead, and a real `None` reaches the wire as
+    `null`.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "OMITTED"
+
+
+OMITTED = Omitted()
+
+
+def _card_body(
+    text: str | None,
+    embeds: list[dict[str, object]] | Omitted | None,
+    buttons: list[dict[str, object]] | Omitted | None,
+) -> dict[str, object]:
+    """The shared body builder for the two routes that take card parts.
+
+    A key is written when its part is present, and only then: `text=None` is
+    absent (AMENDMENT-07 §2 makes `text` unclearable, so `None` has only the
+    one meaning there) while `text=""` is a real, legal value on both routes.
+    `embeds`/`buttons` write `null` on a real `None` and are left out only on
+    `OMITTED`.
+    """
+    body: dict[str, object] = {}
+    if text is not None:
+        body["text"] = text
+    if not isinstance(embeds, Omitted):
+        body["embeds"] = embeds
+    if not isinstance(buttons, Omitted):
+        body["buttons"] = buttons
+    return body
+
+
 def _default_logger() -> logging.Logger:
     """The "aurival" logger, built once at import time. Left alone, an
     unconfigured Python logger already sends WARNING+ to stderr via the
@@ -246,11 +289,24 @@ class HttpClient:
             idempotency_key=str(uuid.uuid4()),
         )
 
-    async def edit_message(self, msg: str, text: str) -> dict:
+    async def edit_message(
+        self,
+        msg: str,
+        text: str | None = None,
+        *,
+        embeds: list[dict[str, object]] | Omitted | None = OMITTED,
+        buttons: list[dict[str, object]] | Omitted | None = OMITTED,
+    ) -> dict:
+        """`PATCH /v1/messages/{msg}` with whichever card parts are present
+        (AMENDMENT-07 §2). A part left `OMITTED` keeps whatever the message
+        already has; `None` goes on the wire as `null` and clears it. Unlike
+        `send_message`, an empty list is never a reason to drop the key — the
+        caller has already turned `embeds=[]` into the clearing `None`."""
+        body = _card_body(text, embeds, buttons)
         return await self.request(
             "PATCH",
             f"/v1/messages/{msg}",
-            body={"text": text},
+            body=body,
             idempotency_key=str(uuid.uuid4()),
         )
 
@@ -275,10 +331,24 @@ class HttpClient:
             idempotency_key=str(uuid.uuid4()),
         )
 
-    async def ack_interaction(self, interaction: str) -> dict:
+    async def ack_interaction(
+        self,
+        interaction: str,
+        text: str | None = None,
+        *,
+        embeds: list[dict[str, object]] | Omitted | None = OMITTED,
+        buttons: list[dict[str, object]] | Omitted | None = OMITTED,
+    ) -> dict:
+        """`POST /v1/interactions/{interaction}/ack`, optionally carrying the
+        replacement card (AMENDMENT-07 §3). With no parts at all the body is
+        `None`, not `{}`, so a bare ack is byte-identical on the wire to the
+        one 0.5.0 sent: `request` passes `json=body` straight to aiohttp, and
+        `json=None` writes no entity body and no content-type."""
+        body = _card_body(text, embeds, buttons)
         return await self.request(
             "POST",
             f"/v1/interactions/{interaction}/ack",
+            body=body or None,
             idempotency_key=str(uuid.uuid4()),
         )
 

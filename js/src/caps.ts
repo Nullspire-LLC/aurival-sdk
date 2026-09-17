@@ -65,3 +65,16 @@ export const CAP_BUTTON_MISSING_LABEL =
  * refused here rather than sent for the server to refuse as empty text.
  */
 export const EMPTY_MESSAGE = 'a message needs text, embeds or buttons';
+
+/**
+ * AMENDMENT-07 §7's one new code, `nothing_to_edit`: a PATCH body carrying
+ * none of `text`, `embeds` or `buttons` has nothing to change, so the SDK
+ * refuses it here rather than spending a round trip on it.
+ *
+ * The sentence is copied VERBATIM from AMENDMENT-07 §7's table because L1 has
+ * not landed `errors_v1.go`'s row yet — when it does, this string and the Go
+ * catalogue's must stay byte-identical, as they are for every other sentence
+ * shared between `errors_v1.go`, `ERRORS-V1.md` §3, `sdk/python/aurival/caps.py`
+ * and this file.
+ */
+export const NOTHING_TO_EDIT = 'an edit needs text, embeds or buttons';

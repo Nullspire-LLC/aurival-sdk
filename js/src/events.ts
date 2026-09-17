@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { EMPTY_MESSAGE as NOTHING_TO_SAY } from './caps.js';
+import { EMPTY_MESSAGE as NOTHING_TO_SAY, NOTHING_TO_EDIT } from './caps.js';
 import { AurivalError } from './errors.js';
 import {
   buttonUsedFromWire,
@@ -22,7 +22,7 @@ import {
   serialiseEmbeds,
 } from './embeds.js';
 import type { Button, ButtonLike, ButtonUsed, Embed, EmbedLike } from './embeds.js';
-import type { HttpClient } from './http.js';
+import type { CardParts, HttpClient } from './http.js';
 
 export interface User {
   id: string;
@@ -262,6 +262,68 @@ function requireSomethingToSay(
   }
 }
 
+/**
+ * What `edit()` and `ack()` may carry (AMENDMENT-07 §9). Each of the three is
+ * independently three-state:
+ *
+ * - absent / `undefined` — leave that part of the card alone
+ * - `[]` or `null` on `embeds`/`buttons` — CLEAR that part (both spellings go
+ *   on the wire as `null`; §9 accepts either so a caller who built an array
+ *   and filtered it empty gets the clear they meant)
+ * - a non-empty array — the replacement, validated exactly as `send` validates
+ *
+ * `text: ''` is a real value, not an omission: §2 moved the empty check onto
+ * the merged card, so clearing the words while keeping the plate is legal.
+ */
+export interface EditInit {
+  text?: string;
+  embeds?: ReadonlyArray<EmbedLike> | null;
+  buttons?: ReadonlyArray<ButtonLike> | null;
+}
+
+/**
+ * One card part, resolved to its wire value. The clear is resolved BEFORE
+ * serialising on purpose: `serialiseEmbeds([])` returns `[]`, not `undefined`
+ * and not `null`, so handing an empty array straight to it would put an empty
+ * array on the wire — which AMENDMENT-07 §2 reads as "replace with nothing
+ * present" only by accident and which the server's allowlist has no reason to
+ * treat as a clear. `null` is the one spelling the wire carries (R-2).
+ */
+function embedsPart(
+  embeds: ReadonlyArray<EmbedLike> | null | undefined,
+): Record<string, unknown>[] | null | undefined {
+  if (embeds === undefined) return undefined;
+  if (embeds === null || embeds.length === 0) return null;
+  return serialiseEmbeds(embeds);
+}
+
+/** `embedsPart`'s twin for buttons — same three states, same reason. */
+function buttonsPart(
+  buttons: ReadonlyArray<ButtonLike> | null | undefined,
+): Record<string, unknown>[] | null | undefined {
+  if (buttons === undefined) return undefined;
+  if (buttons === null || buttons.length === 0) return null;
+  return serialiseButtons(buttons);
+}
+
+/**
+ * `EditInit` -> the serialised `CardParts` the HTTP layer puts on the wire.
+ * Validation of a non-empty array happens here, so a bad embed throws before
+ * the round trip exactly as it does on `send`.
+ */
+function cardParts(init: EditInit): CardParts {
+  return {
+    text: init.text,
+    embeds: embedsPart(init.embeds),
+    buttons: buttonsPart(init.buttons),
+  };
+}
+
+/** True when none of the three parts is present — nothing for the server to do. */
+function partsAreEmpty(parts: CardParts): boolean {
+  return parts.text === undefined && parts.embeds === undefined && parts.buttons === undefined;
+}
+
 /** Accepts either a `Chat` or a raw chat id string — Context actions take both. */
 function chatId(c: Chat | string): string {
   return typeof c === 'string' ? c : c.id;
@@ -437,12 +499,33 @@ export class BaseContext {
   }
 
   /**
-   * Change the text of one of this bot's own messages. Pass what `reply()`
-   * or `send()` returned, or its id. Someone else's message is
-   * `MessageNotYours`. Returns the updated message.
+   * Change one of this bot's own messages in place. Pass what `reply()` or
+   * `send()` returned, or its id. Someone else's message is `MessageNotYours`.
+   * Returns the updated message.
+   *
+   * Two forms, and the string one is the door AMENDMENT-05 opened and both
+   * READMEs teach — `ctx.edit(sent, 'done!')` keeps working byte for byte and
+   * means `{ text: 'done!' }`:
+   *
+   * ```ts
+   * await ctx.edit(sent, 'done!');                         // words only
+   * await ctx.edit(sent, { embeds: [result] });            // plate only
+   * await ctx.edit(sent, { text: '', buttons: [again] });  // empty words, new row
+   * await ctx.edit(sent, { buttons: [] });                 // take the row off
+   * ```
+   *
+   * AMENDMENT-07 §2: a part you do not pass is KEPT, `[]` or `null` on
+   * `embeds`/`buttons` CLEARS it, and the server validates the merged card, so
+   * `text: ''` is legal as long as something survives. An edit carrying none of
+   * the three is refused here, before the round trip.
    */
-  async edit(message: Message | string, text: string): Promise<Message> {
-    return messageFromWire(await this.#http.editMessage(messageId(message), text));
+  async edit(message: Message | string, text: string): Promise<Message>;
+  async edit(message: Message | string, init?: EditInit): Promise<Message>;
+  async edit(message: Message | string, textOrInit?: string | EditInit): Promise<Message> {
+    const init: EditInit = typeof textOrInit === 'string' ? { text: textOrInit } : (textOrInit ?? {});
+    const parts = cardParts(init);
+    if (partsAreEmpty(parts)) throw new Error(NOTHING_TO_EDIT);
+    return messageFromWire(await this.#http.editMessage(messageId(message), parts));
   }
 
   /** Delete one of this bot's own messages. Someone else's is `MessageNotYours`. */
@@ -670,11 +753,31 @@ export class ButtonContext extends BaseContext {
 
   /**
    * Acknowledge the button press — `POST /v1/interactions/{interaction}/ack`,
-   * 204 no body. Acking twice is `InteractionAlreadyUsed` (surfaced through
-   * the existing code -> class mapping; there is no dedicated class here).
+   * 204. Acking twice is `InteractionAlreadyUsed` (surfaced through the
+   * existing code -> class mapping; there is no dedicated class here).
+   *
+   * `ack()` with no argument sends NO BODY and is byte-identical to 0.5.0: the
+   * pressed row simply flips to used. Pass a body and AMENDMENT-07 §3 makes
+   * the ack and the card replacement ONE atomic write, so a question card
+   * becomes its result card without a second request and without a window
+   * where the press is spent and the card still asks:
+   *
+   * ```ts
+   * await ctx.ack({ text: '', embeds: [result], buttons: [playAgain] });
+   * ```
+   *
+   * Clearing works as it does on `edit()`: `[]` or `null` puts `null` on the
+   * wire. A body carrying `buttons` resets `used` to null — the row is new, so
+   * it starts unused, and reusing the old ids is safe (§3). An ack never marks
+   * the message edited. Unlike `edit()` there is no client-side emptiness
+   * precondition: an ack with nothing in it is the flip, which is legal.
    */
-  async ack(): Promise<void> {
-    await this.#http.ackInteraction(this.interaction);
+  async ack(init?: EditInit): Promise<void> {
+    if (init === undefined) {
+      await this.#http.ackInteraction(this.interaction);
+      return;
+    }
+    await this.#http.ackInteraction(this.interaction, cardParts(init));
   }
 
   static fromEvent(event: Event, http: HttpClient): ButtonContext {

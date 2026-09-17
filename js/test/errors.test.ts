@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   AckUnknownEvent,
@@ -69,6 +72,7 @@ import {
   TooManyEmbedFields,
   TooManyEmbeds,
   TooManyProblems,
+  NothingToEdit,
   TransportError,
   TYPE_CLASSES,
   UnknownOperation,
@@ -99,7 +103,12 @@ import {
 // `button_label_too_long`, `link_button_not_supported`,
 // `invalid_button_style`, `embed_title_too_long`,
 // `embed_description_too_long`, `embed_url_not_https`, `embed_empty`,
-// `buttons_without_message`, `button_already_used` — taking it to 53, and AMENDMENT-06's eight new card codes take it to 61. This
+// `buttons_without_message`, `button_already_used` — taking it to 53, and AMENDMENT-06's eight new card codes take it to 61.
+// AMENDMENT-07 §7 then adds `nothing_to_edit` (invalid_request_error,
+// 400), taking it to 62. That class SHIPS AHEAD of the Go catalogue row —
+// L1 has not landed `errors_v1.go`'s entry yet — so the go-catalogue
+// parity twin below deliberately asserts only Go -> SDK, never the
+// reverse. This
 // literal is the acceptance bar for THAT number: a deleted or
 // silently-added class fails the length/key-set assertion below.
 const EXPECTED_CODES = [
@@ -137,6 +146,7 @@ const EXPECTED_CODES = [
   'unknown_operation',
   'ack_unknown_event',
   'too_many_problems',
+  'nothing_to_edit',
   'reaction_emoji_too_long',
   'mention_not_member',
   'mention_token_missing',
@@ -202,6 +212,7 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   unknown_operation: [UnknownOperation, 'invalid_request_error'],
   ack_unknown_event: [AckUnknownEvent, 'invalid_request_error'],
   too_many_problems: [TooManyProblems, 'invalid_request_error'],
+  nothing_to_edit: [NothingToEdit, 'invalid_request_error'],
   reaction_emoji_too_long: [ReactionEmojiTooLong, 'invalid_request_error'],
   mention_not_member: [MentionNotMember, 'invalid_request_error'],
   mention_token_missing: [MentionTokenMissing, 'invalid_request_error'],
@@ -244,7 +255,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 61-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 62-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });
@@ -432,4 +443,108 @@ describe('instance identity', () => {
     });
     expect(exc.message).toBe('A message needs text.');
   });
+});
+
+// --- the go-catalogue parity twin (AMENDMENT-07 §10's js side) --------------
+//
+// `EXPECTED_CODES` above counts SDK CLASSES. This block counts the BACKEND's
+// catalogue, by parsing `errors_v1.go` itself — the twin of
+// `sdk/python/tests/test_errors.py`'s catalogue test, with the same regexes
+// over the same const names, so a code added to Go and forgotten in js fails
+// here rather than in production.
+//
+// SKIP-GUARDED, never a hard failure: the public mirror (`Nullspire-LLC/
+// aurival-sdk`) ships `sdk/` alone, so the Go tree is simply not there and
+// this guard has nothing to compare against.
+//
+// ONE DIRECTION ONLY — Go -> SDK. There is deliberately no reverse
+// class -> catalogue assertion: `nothing_to_edit` ships ahead of L1's Go row
+// (AMENDMENT-07 §7), so the SDK legitimately knows a code Go does not yet
+// name, and a reverse assertion would go red on correct code.
+
+const GO_ERRORS_FILE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../backend-go/internal/botapi/errors_v1.go',
+);
+
+const GO_TREE_PRESENT = existsSync(GO_ERRORS_FILE);
+
+/** `TypeAuthentication = "authentication_error"` -> { TypeAuthentication: '…' }. */
+function parseConstants(src: string, prefix: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const pattern = new RegExp(String.raw`\b(${prefix}\w+)\s*=\s*"([a-z_]+)"`, 'g');
+  for (const match of src.matchAll(pattern)) out.set(match[1] as string, match[2] as string);
+  return out;
+}
+
+/**
+ * Walks the `errCatalogue` map literal and returns { CodeConst -> TypeConst }.
+ * Entries read `CodeAccessTokenExpired: {TypeAuthentication, 401,` — the const
+ * NAMES, not the string values, so this is independent of how either side
+ * spells the wire strings.
+ */
+function parseCatalogueTypes(src: string): Map<string, string> {
+  const start = src.indexOf('var errCatalogue');
+  if (start === -1) throw new Error('failed to find `var errCatalogue` in errors_v1.go');
+  const body = src.slice(start);
+  const out = new Map<string, string>();
+  for (const match of body.matchAll(/\b(Code\w+):\s*\{\s*(Type\w+)\s*,/g)) {
+    out.set(match[1] as string, match[2] as string);
+  }
+  return out;
+}
+
+/** { wire code -> wire type }, straight off the Go source. */
+function goCatalogueCodes(): Map<string, string> {
+  const src = readFileSync(GO_ERRORS_FILE, 'utf8');
+  const typeConsts = parseConstants(src, 'Type');
+  const codeConsts = parseConstants(src, 'Code');
+  const catalogue = parseCatalogueTypes(src);
+  if (catalogue.size === 0) {
+    throw new Error('failed to parse errCatalogue out of errors_v1.go — regex is stale');
+  }
+  const out = new Map<string, string>();
+  for (const [codeConst, typeConst] of catalogue) {
+    const code = codeConsts.get(codeConst);
+    const wireType = typeConsts.get(typeConst);
+    if (code === undefined) throw new Error(`no string constant for ${codeConst}`);
+    if (wireType === undefined) throw new Error(`no string constant for ${typeConst}`);
+    out.set(code, wireType);
+  }
+  return out;
+}
+
+/**
+ * MEASURED, and the reason the parse is NOT inside the `describe` below:
+ * vitest collects a skipped suite by RUNNING its factory, so a `readFileSync`
+ * in the suite body throws ENOENT on the public mirror even though every test
+ * in it is marked skipped. The guard therefore lives out here, and the absent
+ * case hands `it.each` one placeholder row so it still has a case to skip.
+ */
+const GO_CATALOGUE: ReadonlyMap<string, string> = GO_TREE_PRESENT
+  ? goCatalogueCodes()
+  : new Map([['(backend-go is not in this checkout)', 'authentication_error']]);
+
+describe.skipIf(!GO_TREE_PRESENT)('go catalogue parity (parsed from errors_v1.go)', () => {
+  const catalogue = GO_CATALOGUE;
+
+  it('parsed something sane (a canary: at 0 every assertion below passes vacuously)', () => {
+    expect(catalogue.size).toBeGreaterThanOrEqual(30);
+    expect(catalogue.get('access_token_expired')).toBe('authentication_error');
+  });
+
+  it.each([...catalogue.keys()].sort())(
+    'go code %s has a CODE_CLASSES row whose class matches the catalogue type',
+    (code) => {
+      const wireType = catalogue.get(code);
+      if (wireType === undefined) throw new Error(`no catalogue entry for ${code}`);
+      const cls = CODE_CLASSES[code];
+      expect(cls, `${code} is in the Go catalogue but has no CODE_CLASSES row`).toBeDefined();
+      const typeParent = TYPE_CLASSES[wireType];
+      if (typeParent === undefined) throw new Error(`no TYPE_CLASSES row for ${wireType}`);
+      const exc = fromEnvelope(envelopeFor(code, wireType));
+      expect(exc).toBeInstanceOf(cls as AurivalAPIErrorClass);
+      expect(exc).toBeInstanceOf(typeParent);
+    },
+  );
 });

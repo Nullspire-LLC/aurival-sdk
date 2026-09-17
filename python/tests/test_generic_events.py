@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from aurival import http
 from aurival.bot import Bot
 from aurival.errors import AurivalError
 from aurival.events import (
@@ -51,7 +52,17 @@ class _StubHttp:
         self.calls.append(("set_typing", chat, is_typing))
         return {}
 
-    async def edit_message(self, msg: str, text: str) -> dict:
+    async def edit_message(
+        self,
+        msg: str,
+        text: str | None = None,
+        *,
+        embeds: object = http.OMITTED,
+        buttons: object = http.OMITTED,
+    ) -> dict:
+        # AMENDMENT-07 §2 widened the real method; this stub mirrors it so the
+        # delegation test keeps testing delegation rather than the arity. The
+        # body the card parts actually produce is pinned in test_messages.py.
         self.calls.append(("edit_message", msg, text))
         return {"id": msg, "text": text}
 
@@ -80,7 +91,14 @@ class _StubHttp:
         self.calls.append(("send_message", chat, text, mentions, embeds, buttons))
         return {"id": "msg_new"}
 
-    async def ack_interaction(self, interaction: str) -> dict:
+    async def ack_interaction(
+        self,
+        interaction: str,
+        text: str | None = None,
+        *,
+        embeds: object = http.OMITTED,
+        buttons: object = http.OMITTED,
+    ) -> dict:
         self.calls.append(("ack_interaction", interaction))
         return {}
 
