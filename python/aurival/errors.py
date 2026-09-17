@@ -205,6 +205,85 @@ class MessageNotYours(PermissionDeniedError):
     bot's own messages."""
 
 
+# AMENDMENT-05 §2. The card's caps and per-field refusals — every one a 400,
+# and every sentence quotes card.go's CapTemplate* constants (mirrored in
+# caps.py) so a cap cannot move in the validator without moving here too.
+
+
+class TooManyEmbeds(InvalidRequestError):
+    """`too_many_embeds` — a message carries more than `MAX_EMBEDS` embeds."""
+
+
+class TooManyEmbedFields(InvalidRequestError):
+    """`too_many_embed_fields` — one embed carries more than `MAX_EMBED_FIELDS`
+    fields."""
+
+
+class TooManyButtons(InvalidRequestError):
+    """`too_many_buttons` — a message carries more than `MAX_BUTTONS` buttons."""
+
+
+class ButtonMissingField(InvalidRequestError):
+    """`button_missing_field` — a button is missing a field it needs to be
+    rendered or pressed."""
+
+
+class ButtonIDTooLong(InvalidRequestError):
+    """`button_id_too_long` — a button id is longer than
+    `MAX_BUTTON_ID_LENGTH`."""
+
+
+class DuplicateButtonID(InvalidRequestError):
+    """`duplicate_button_id` — two buttons in the same message share an id.
+    Button ids must be unique within a message."""
+
+
+class ButtonLabelTooLong(InvalidRequestError):
+    """`button_label_too_long` — a button label is longer than
+    `MAX_LABEL_RUNES`."""
+
+
+class LinkButtonNotSupported(InvalidRequestError):
+    """`link_button_not_supported` — link-style buttons are not supported in
+    v1."""
+
+
+class InvalidButtonStyle(InvalidRequestError):
+    """`invalid_button_style` — a button's style is not one of
+    `BUTTON_STYLES`."""
+
+
+class EmbedTitleTooLong(InvalidRequestError):
+    """`embed_title_too_long` — an embed title is longer than
+    `MAX_TITLE_LENGTH`."""
+
+
+class EmbedDescriptionTooLong(InvalidRequestError):
+    """`embed_description_too_long` — an embed description is longer than
+    `MAX_DESCRIPTION_LENGTH`."""
+
+
+class EmbedURLNotHTTPS(InvalidRequestError):
+    """`embed_url_not_https` — an embed image url does not start with
+    `https://`."""
+
+
+class EmbedEmpty(InvalidRequestError):
+    """`embed_empty` — an embed carries none of a title, a description, a
+    field or a footer. A colour on its own is a coloured rectangle, not a
+    message."""
+
+
+class ButtonsWithoutMessage(InvalidRequestError):
+    """`buttons_without_message` — buttons were sent with nothing under them.
+    Send text, embeds, or both alongside them."""
+
+
+class ButtonAlreadyUsed(InvalidRequestError):
+    """`button_already_used` — a row of actions is spent once a button on it
+    has been pressed; send a new message for another press."""
+
+
 DOC_URL_PREFIX = "https://bots.aurival.com/docs/errors#"
 
 TYPE_CLASSES: dict[str, type[AurivalAPIError]] = {
@@ -255,6 +334,21 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     "mention_not_member": MentionNotMember,
     "mention_token_missing": MentionTokenMissing,
     "message_not_yours": MessageNotYours,
+    "too_many_embeds": TooManyEmbeds,
+    "too_many_embed_fields": TooManyEmbedFields,
+    "too_many_buttons": TooManyButtons,
+    "button_missing_field": ButtonMissingField,
+    "button_id_too_long": ButtonIDTooLong,
+    "duplicate_button_id": DuplicateButtonID,
+    "button_label_too_long": ButtonLabelTooLong,
+    "link_button_not_supported": LinkButtonNotSupported,
+    "invalid_button_style": InvalidButtonStyle,
+    "embed_title_too_long": EmbedTitleTooLong,
+    "embed_description_too_long": EmbedDescriptionTooLong,
+    "embed_url_not_https": EmbedURLNotHTTPS,
+    "embed_empty": EmbedEmpty,
+    "buttons_without_message": ButtonsWithoutMessage,
+    "button_already_used": ButtonAlreadyUsed,
 }
 
 

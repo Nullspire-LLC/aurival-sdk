@@ -245,6 +245,57 @@ bot.on('member.joined', async (ctx) => {
 });
 ```
 
+## Embeds and buttons
+
+`Embed` is a builder — every `setAuthor`/`setThumbnail`/`addField`/`setFooter` call returns the
+same instance, so you chain them off the constructor. `Button` is a separate, flat object:
+`new Button({ label, id, style })`, where `style` is one of `'primary' | 'secondary' | 'danger'`
+— `'link'` isn't supported yet, and passing it throws a plain error naming the bad style. Pass
+arrays of both into the existing options-object shape `ctx.reply(text, { embeds, buttons })`,
+the same convention `ctx.send(chat, text, { mentions })` already uses:
+
+```ts
+import { Embed, Button } from 'aurival';
+
+const embed = new Embed({ title: 'Trivia round 4', description: 'Which ocean is the deepest?', color: '#3E6E8E' })
+  .setAuthor('Quizbot', 'https://cdn.aurival.com/q.png')
+  .setThumbnail('https://cdn.aurival.com/t.png')
+  .addField('Players', '6', true)
+  .addField('Round', '4 of 10', true)
+  .setFooter('Answer within 30s');
+
+const buttons = [
+  new Button({ label: 'Pacific', id: 'pacific', style: 'primary' }),
+  new Button({ label: 'Atlantic', id: 'atlantic', style: 'secondary' }),
+  new Button({ label: 'Indian', id: 'indian', style: 'secondary' }),
+];
+
+await ctx.reply('Ready when you are.', { embeds: [embed], buttons });
+```
+
+There are caps, and the SDK checks them locally before the frame ever goes out, so a bad bot
+fails fast with a plain error naming which cap it hit: a message carries at most 3 embeds, an
+embed at most 6 fields, a message at most 5 buttons, and a button label is at most 24
+characters.
+
+A press comes back as a `button.pressed` event, handled the same way any other event is:
+
+```ts
+bot.on('button.pressed', async (ctx) => {
+  await ctx.ack();
+  if (ctx.button === 'pacific') {
+    await ctx.reply('Correct! The Pacific is deepest.');
+  }
+});
+```
+
+The `ctx` there is a `ButtonContext`: `.chat`, `.user`, `.message`, `.button` (the id you set
+when building it) and `.interaction`. Call `await ctx.ack()` exactly once per press — a button
+is single-use, and acking one a second time doesn't throw locally, the server 409s the request.
+
+The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
+[cookbook](https://bots.aurival.com/docs/cookbook).
+
 ## Upgrading from 0.2.x
 
 There is one `Context` per event family now, instead of one class for every event with most of
@@ -279,6 +330,19 @@ calls nothing, because `bot.on()` hands your handler the right context already b
 One thing that is not a break, but is worth knowing if you pinned to it: `version` reports
 `'0.3.0'`. In 0.2.1 it still said `'0.2.0'`, which was simply wrong; a test pins it to
 `package.json` now, so it cannot drift again.
+
+### Upgrading from 0.3.x
+
+`Embed`, `Button` and `ButtonContext` are new in 0.4.0. None of it is a break: `reply()` and
+`send()` gained an `embeds` and a `buttons` field on their options object, both optional, so
+calls that never mention them behave exactly as they did on 0.3.x.
+
+`Message` gained three new fields — `embeds`, `buttons` and `buttonUsed` — all of which default
+to an empty array (or `null` for `buttonUsed`) on a message that never carried any, so existing
+code reading other `Message` fields is unaffected.
+
+`bot.on('button.pressed', ...)` is a new event a bot can opt into; a bot that never registers a
+handler for it simply never receives one.
 
 ## Shadowed commands
 

@@ -15,8 +15,18 @@ import {
   BotLinkNotAllowed,
   BotPlaygroundOnly,
   BotSuspended,
+  ButtonAlreadyUsed,
+  ButtonIDTooLong,
+  ButtonLabelTooLong,
+  ButtonMissingField,
+  ButtonsWithoutMessage,
   CODE_CLASSES,
   DOC_URL_PREFIX,
+  DuplicateButtonID,
+  EmbedDescriptionTooLong,
+  EmbedEmpty,
+  EmbedTitleTooLong,
+  EmbedURLNotHTTPS,
   EmptyText,
   FrameInvalid,
   FrameTooLarge,
@@ -24,11 +34,13 @@ import {
   IdempotencyKeyReused,
   IdleTimeout,
   InternalError,
+  InvalidButtonStyle,
   InvalidCommandName,
   InvalidJSON,
   InvalidRequestError,
   KeyAlreadyPaired,
   KeyRevoked,
+  LinkButtonNotSupported,
   MentionNotMember,
   MentionTokenMissing,
   MessageNotYours,
@@ -45,6 +57,9 @@ import {
   SessionSuperseded,
   SyncRateLimited,
   TextTooLong,
+  TooManyButtons,
+  TooManyEmbedFields,
+  TooManyEmbeds,
   TooManyProblems,
   TransportError,
   TYPE_CLASSES,
@@ -69,9 +84,16 @@ import {
 // 400 — deliberately answered for both a nonexistent user id and an existing
 // non-member, AMENDMENT-04 A-4/R-8, so it can never serve as a
 // user-existence oracle), and `message_not_yours` (permission_error, 403).
-// That takes the SDK class count to 38. This literal is the acceptance bar
-// for THAT number: a deleted or silently-added class fails the
-// length/key-set assertion below.
+// That took the SDK class count to 38. AMENDMENT-05 §2's card surface then
+// added the fifteen embed/button codes (all invalid_request_error) —
+// `too_many_embeds`, `too_many_embed_fields`, `too_many_buttons`,
+// `button_missing_field`, `button_id_too_long`, `duplicate_button_id`,
+// `button_label_too_long`, `link_button_not_supported`,
+// `invalid_button_style`, `embed_title_too_long`,
+// `embed_description_too_long`, `embed_url_not_https`, `embed_empty`,
+// `buttons_without_message`, `button_already_used` — taking it to 53. This
+// literal is the acceptance bar for THAT number: a deleted or
+// silently-added class fails the length/key-set assertion below.
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -111,6 +133,21 @@ const EXPECTED_CODES = [
   'mention_not_member',
   'mention_token_missing',
   'message_not_yours',
+  'too_many_embeds',
+  'too_many_embed_fields',
+  'too_many_buttons',
+  'button_missing_field',
+  'button_id_too_long',
+  'duplicate_button_id',
+  'button_label_too_long',
+  'link_button_not_supported',
+  'invalid_button_style',
+  'embed_title_too_long',
+  'embed_description_too_long',
+  'embed_url_not_https',
+  'embed_empty',
+  'buttons_without_message',
+  'button_already_used',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -153,6 +190,21 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   mention_not_member: [MentionNotMember, 'invalid_request_error'],
   mention_token_missing: [MentionTokenMissing, 'invalid_request_error'],
   message_not_yours: [MessageNotYours, 'permission_error'],
+  too_many_embeds: [TooManyEmbeds, 'invalid_request_error'],
+  too_many_embed_fields: [TooManyEmbedFields, 'invalid_request_error'],
+  too_many_buttons: [TooManyButtons, 'invalid_request_error'],
+  button_missing_field: [ButtonMissingField, 'invalid_request_error'],
+  button_id_too_long: [ButtonIDTooLong, 'invalid_request_error'],
+  duplicate_button_id: [DuplicateButtonID, 'invalid_request_error'],
+  button_label_too_long: [ButtonLabelTooLong, 'invalid_request_error'],
+  link_button_not_supported: [LinkButtonNotSupported, 'invalid_request_error'],
+  invalid_button_style: [InvalidButtonStyle, 'invalid_request_error'],
+  embed_title_too_long: [EmbedTitleTooLong, 'invalid_request_error'],
+  embed_description_too_long: [EmbedDescriptionTooLong, 'invalid_request_error'],
+  embed_url_not_https: [EmbedURLNotHTTPS, 'invalid_request_error'],
+  embed_empty: [EmbedEmpty, 'invalid_request_error'],
+  buttons_without_message: [ButtonsWithoutMessage, 'invalid_request_error'],
+  button_already_used: [ButtonAlreadyUsed, 'invalid_request_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {
@@ -168,7 +220,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 38-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 53-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });

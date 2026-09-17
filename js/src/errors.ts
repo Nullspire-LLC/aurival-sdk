@@ -128,6 +128,61 @@ export class BotPlaygroundOnly extends PermissionDeniedError {}
 /** `message_not_yours` — 403, `edit()`/`delete()` only work on the bot's own messages. */
 export class MessageNotYours extends PermissionDeniedError {}
 
+// AMENDMENT-05 §2. The card's caps and per-field refusals — every one a 400,
+// and every sentence quotes card.go's CapTemplate* constants (mirrored in
+// caps.ts) so a cap cannot move in the validator without moving here too.
+
+/** `too_many_embeds` — a message carries more than `MAX_EMBEDS` embeds. */
+export class TooManyEmbeds extends InvalidRequestError {}
+
+/** `too_many_embed_fields` — one embed carries more than `MAX_EMBED_FIELDS` fields. */
+export class TooManyEmbedFields extends InvalidRequestError {}
+
+/** `too_many_buttons` — a message carries more than `MAX_BUTTONS` buttons. */
+export class TooManyButtons extends InvalidRequestError {}
+
+/** `button_missing_field` — a button is missing a field it needs to be rendered or pressed. */
+export class ButtonMissingField extends InvalidRequestError {}
+
+/** `button_id_too_long` — a button id is longer than `MAX_BUTTON_ID_LENGTH`. */
+export class ButtonIDTooLong extends InvalidRequestError {}
+
+/** `duplicate_button_id` — two buttons in the same message share an id. Button ids must be unique within a message. */
+export class DuplicateButtonID extends InvalidRequestError {}
+
+/** `button_label_too_long` — a button label is longer than `MAX_LABEL_RUNES`. */
+export class ButtonLabelTooLong extends InvalidRequestError {}
+
+/** `link_button_not_supported` — link-style buttons are not supported in v1. */
+export class LinkButtonNotSupported extends InvalidRequestError {}
+
+/** `invalid_button_style` — a button's style is not one of `BUTTON_STYLES`. */
+export class InvalidButtonStyle extends InvalidRequestError {}
+
+/** `embed_title_too_long` — an embed title is longer than `MAX_TITLE_LENGTH`. */
+export class EmbedTitleTooLong extends InvalidRequestError {}
+
+/** `embed_description_too_long` — an embed description is longer than `MAX_DESCRIPTION_LENGTH`. */
+export class EmbedDescriptionTooLong extends InvalidRequestError {}
+
+/** `embed_url_not_https` — an embed image url does not start with `https://`. */
+export class EmbedURLNotHTTPS extends InvalidRequestError {}
+
+/**
+ * `embed_empty` — an embed carries none of a title, a description, a field or
+ * a footer. A colour on its own is a coloured rectangle, not a message.
+ */
+export class EmbedEmpty extends InvalidRequestError {}
+
+/** `buttons_without_message` — buttons were sent with nothing under them. Send text, embeds, or both alongside them. */
+export class ButtonsWithoutMessage extends InvalidRequestError {}
+
+/**
+ * `button_already_used` — a row of actions is spent once a button on it has
+ * been pressed; send a new message for another press.
+ */
+export class ButtonAlreadyUsed extends InvalidRequestError {}
+
 export class RateLimited extends RateLimitError {}
 export class PairRateLimited extends RateLimitError {}
 export class SyncRateLimited extends RateLimitError {}
@@ -187,6 +242,21 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   mention_not_member: MentionNotMember,
   mention_token_missing: MentionTokenMissing,
   message_not_yours: MessageNotYours,
+  too_many_embeds: TooManyEmbeds,
+  too_many_embed_fields: TooManyEmbedFields,
+  too_many_buttons: TooManyButtons,
+  button_missing_field: ButtonMissingField,
+  button_id_too_long: ButtonIDTooLong,
+  duplicate_button_id: DuplicateButtonID,
+  button_label_too_long: ButtonLabelTooLong,
+  link_button_not_supported: LinkButtonNotSupported,
+  invalid_button_style: InvalidButtonStyle,
+  embed_title_too_long: EmbedTitleTooLong,
+  embed_description_too_long: EmbedDescriptionTooLong,
+  embed_url_not_https: EmbedURLNotHTTPS,
+  embed_empty: EmbedEmpty,
+  buttons_without_message: ButtonsWithoutMessage,
+  button_already_used: ButtonAlreadyUsed,
 };
 
 export interface FromEnvelopeOptions {

@@ -260,6 +260,71 @@ async def greet(ctx: MemberContext) -> None:
 the token, not because the other forms are wrong. Every entry in `mentions` needs its
 `@handle` token actually present in `text`, or the server rejects the request.
 
+## Embeds and buttons
+
+`Embed` is a builder: `Embed(title=..., description=..., color=...)` gives you the starting
+card, and every `add_field`/`set_author`/`set_thumbnail`/`set_footer` call returns the same
+`Embed`, so you chain them straight into the constructor call. `Button(label, id=..., style=...)`
+is a separate, flat object — `style` is one of `"primary" | "secondary" | "danger"`; `"link"`
+isn't supported yet, and passing it raises a plain `ValueError` naming the bad style. Pass
+lists of both straight into `ctx.reply()` or `ctx.send()`:
+
+```python
+from aurival import Embed, Button
+
+embed = (
+    Embed(title="Trivia round 4", description="Which ocean is the deepest?", color="#3E6E8E")
+    .set_author("Quizbot", icon="https://cdn.aurival.com/q.png")
+    .set_thumbnail("https://cdn.aurival.com/t.png")
+    .add_field("Players", "6", inline=True)
+    .add_field("Round", "4 of 10", inline=True)
+    .set_footer("Answer within 30s")
+)
+buttons = [
+    Button("Pacific", id="pacific", style="primary"),
+    Button("Atlantic", id="atlantic", style="secondary"),
+    Button("Indian", id="indian", style="secondary"),
+]
+await ctx.reply("Ready when you are.", embeds=[embed], buttons=buttons)
+```
+
+There are caps, and the SDK checks them locally before the frame ever goes out, so a bad bot
+fails fast with a plain error naming which cap it hit: a message carries at most 3 embeds, an
+embed at most 6 fields, a message at most 5 buttons, and a button label is at most 24
+characters.
+
+A press comes back as a `button.pressed` event, handled the same way any other event is:
+
+```python
+from aurival import ButtonContext
+
+@bot.on("button.pressed")
+async def on_press(ctx: ButtonContext):
+    await ctx.ack()
+    if ctx.button == "pacific":
+        await ctx.reply("Correct! The Pacific is deepest.")
+```
+
+`ButtonContext` carries `.chat`, `.user`, `.message`, `.button` (the id you set when building
+it) and `.interaction`. Call `await ctx.ack()` exactly once per press — a button is single-use,
+and acking one a second time doesn't raise locally, the server 409s the request.
+
+The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
+[cookbook](https://bots.aurival.com/docs/cookbook).
+
+## Upgrading from 0.3.x
+
+`Embed`, `Button` and `ButtonContext` are new in 0.4.0. Nothing about them is required: `reply`
+and `send` gained `embeds=` and `buttons=` keyword arguments, and both default to `None`, so
+code that never mentions them behaves exactly as it did on 0.3.x.
+
+`Message` gained three new attributes — `.embeds`, `.buttons` and `.button_used` — all of which
+default to empty (or `None` for `.button_used`) on a message that never carried any, so existing
+code reading other `Message` fields is unaffected.
+
+`@bot.on("button.pressed")` is a new event a bot can opt into; a bot that never registers a
+handler for it simply never receives one.
+
 ## Shadowed commands
 
 Every `run()` syncs your command list, and the server answers with the chats where another

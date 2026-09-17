@@ -15,6 +15,10 @@
  * AMENDMENT-05 (0.4.0) adds the embeds/buttons surface: `Embed`, `Button`
  * (runtime builder classes) and `ButtonContext` (a fourth `on()`-family
  * context, alongside `ButtonUsed`, a type-only decoded-wire interface).
+ * AMENDMENT-05 §2 then added fifteen more error classes for the card's caps
+ * and per-field refusals (`TooManyEmbeds` through `ButtonAlreadyUsed`),
+ * taking python's `__all__` to 92 and this mirror's count to 91 names plus
+ * the JS-only `MentionLike`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -73,15 +77,25 @@ const EXPECTED = [
   'BotPlaygroundOnly',
   'BotSuspended',
   'Button',
+  'ButtonAlreadyUsed',
   'ButtonContext',
+  'ButtonIDTooLong',
+  'ButtonLabelTooLong',
+  'ButtonMissingField',
   'ButtonUsed',
+  'ButtonsWithoutMessage',
   'ByeAction',
   'CODE_CLASSES',
   'Chat',
   'Command',
   'Context',
   'DOC_URL_PREFIX',
+  'DuplicateButtonID',
   'Embed',
+  'EmbedDescriptionTooLong',
+  'EmbedEmpty',
+  'EmbedTitleTooLong',
+  'EmbedURLNotHTTPS',
   'EmptyText',
   'Event',
   'EventContext',
@@ -92,11 +106,13 @@ const EXPECTED = [
   'IdempotencyKeyReused',
   'IdleTimeout',
   'InternalError',
+  'InvalidButtonStyle',
   'InvalidCommandName',
   'InvalidJSON',
   'InvalidRequestError',
   'KeyAlreadyPaired',
   'KeyRevoked',
+  'LinkButtonNotSupported',
   'MemberContext',
   'MemberPage',
   'Mention',
@@ -119,6 +135,9 @@ const EXPECTED = [
   'SyncRateLimited',
   'TYPE_CLASSES',
   'TextTooLong',
+  'TooManyButtons',
+  'TooManyEmbedFields',
+  'TooManyEmbeds',
   'TooManyProblems',
   'TransportError',
   'UnknownOperation',
@@ -137,9 +156,12 @@ describe('the public surface', () => {
   // here. `Message` is the one it does not mirror — it is a type-only export
   // in `index.ts` and predates this list. AMENDMENT-05 (0.4.0) adds four more
   // mirrored names — `Button`, `ButtonContext`, `ButtonUsed`, `Embed` — so the
-  // count below is 75 mirrored names plus the JS-only `MentionLike`.
-  it('is exactly the 75 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(76);
+  // count was 75 mirrored names plus the JS-only `MentionLike`, 76 total.
+  // AMENDMENT-05 §2 then added fifteen error classes for the card's caps and
+  // per-field refusals, all mirrored in both SDKs — 90 mirrored names plus
+  // `MentionLike`.
+  it('is exactly the 90 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(91);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
