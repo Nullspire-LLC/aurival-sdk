@@ -475,6 +475,12 @@ null` where there was nothing before — so a bot you wrote against 0.4.0 needs 
 in v1`. Build one with `Button.link(label, url)`; that classmethod is the sanctioned constructor, and it sets the
 style for you.
 
+One thing was removed rather than added, so it is the only change here that can break an import:
+`aurival.caps.CAP_LINK_STYLE_DEFERRED` is gone. It held the sentence `link buttons are not
+supported in v1`, and the deferral it named is over, so the constant went with the refusal. If you
+imported it to pre-check a style before sending, delete that check — `Button.link` builds the
+button the server now accepts.
+
 A link button is not an action button wearing a url. It never produces a `button.pressed` event,
 it never flips `used`, and it is not disabled by a sibling being pending or used — so a row can
 go cold around a link and the link still works. If you were counting on every button in a row

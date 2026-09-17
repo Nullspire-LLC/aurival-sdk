@@ -674,6 +674,94 @@ describe('AMENDMENT-06 — button emoji', () => {
     expect(SERVER_EMOJI_TABLE).toHaveLength(33);
   });
 
+  /**
+   * The table above is a hand port, and a hand port rots the moment L1 edits
+   * the server. This reads `TestValidEmoji`'s own cases out of the Go source
+   * and asserts our copy still says the same thing, row for row, so a rule
+   * change on the backend fails here instead of shipping as an SDK that
+   * quietly disagrees with the service it talks to.
+   *
+   * Canonical-only: the public mirror ships `sdk/` alone, so the Go source is
+   * not there to compare against. The table keeps running in the mirror
+   * either way - this guard only adds the drift check where the server is on
+   * disk.
+   */
+  const GO_EMOJI_TEST_PATH = fileURLToPath(
+    new URL('../../../backend-go/internal/botapi/emoji_test.go', import.meta.url),
+  );
+
+  /** Go's double-quoted string form, for the escapes this table actually uses. */
+  const unquoteGo = (literal: string): string => {
+    const simple: Record<string, string> = { n: '\n', t: '\t', '\\': '\\', '"': '"' };
+    let out = '';
+    let i = 1;
+    while (i < literal.length - 1) {
+      const char = literal[i] as string;
+      if (char !== '\\') {
+        out += char;
+        i += 1;
+        continue;
+      }
+      const kind = literal[i + 1] as string;
+      if (kind === 'U') {
+        out += String.fromCodePoint(parseInt(literal.slice(i + 2, i + 10), 16));
+        i += 10;
+      } else if (kind === 'u') {
+        out += String.fromCodePoint(parseInt(literal.slice(i + 2, i + 6), 16));
+        i += 6;
+      } else if (kind === 'x') {
+        out += String.fromCodePoint(parseInt(literal.slice(i + 2, i + 4), 16));
+        i += 4;
+      } else if (simple[kind] !== undefined) {
+        out += simple[kind] as string;
+        i += 2;
+      } else {
+        // Guessed decoding would make this guard pass on the wrong string.
+        throw new Error(`unhandled Go escape ${literal.slice(i, i + 2)}`);
+      }
+    }
+    return out;
+  };
+
+  const parseGoEmojiTable = (): Array<[string, string, boolean]> => {
+    const source = readFileSync(GO_EMOJI_TEST_PATH, 'utf8');
+    const body = source.slice(
+      source.indexOf('cases := []struct'),
+      source.indexOf('for _, c := range cases'),
+    );
+    const row = /\{("(?:[^"\\]|\\.)*"),\s*([\s\S]+?),\s*(true|false)\},/g;
+    const repeat = /^strings\.Repeat\(("(?:[^"\\]|\\.)*"),\s*MaxButtonEmojiRunes\)$/;
+    const rows: Array<[string, string, boolean]> = [];
+    for (const match of body.matchAll(row)) {
+      const value = (match[2] as string).trim();
+      const repeated = repeat.exec(value);
+      let emoji: string;
+      if (repeated) {
+        emoji = unquoteGo(repeated[1] as string).repeat(MAX_BUTTON_EMOJI_RUNES);
+      } else if (value.startsWith('"')) {
+        emoji = unquoteGo(value);
+      } else {
+        throw new Error(`unparsed case value ${value} - the regex is stale`);
+      }
+      rows.push([unquoteGo(match[1] as string), emoji, match[3] === 'true']);
+    }
+    return rows;
+  };
+
+  it.skipIf(!existsSync(GO_EMOJI_TEST_PATH))(
+    "the truth table is still the server's truth table",
+    () => {
+      const server = parseGoEmojiTable();
+      expect(
+        server.length,
+        'failed to parse TestValidEmoji out of emoji_test.go - the regex is stale',
+      ).toBeGreaterThan(0);
+      // The server is authoritative (AMENDMENT-06 §3): port the change,
+      // re-grade, and never land an SDK check stricter than the server's.
+      expect(server).toEqual(SERVER_EMOJI_TABLE);
+    },
+  );
+
   it.each(SERVER_EMOJI_TABLE)('%s', (_name, emoji, legal) => {
     if (legal) {
       expect(() => new Button({ label: 'x', emoji })).not.toThrow();

@@ -169,6 +169,49 @@ export class EmbedDescriptionTooLong extends InvalidRequestError {}
 export class EmbedURLNotHTTPS extends InvalidRequestError {}
 
 /**
+ * `link_url_not_https` — a link target does not start with `https://`.
+ * Separate from `EmbedURLNotHTTPS` on purpose: that one says "an image url",
+ * and a button target is not an image (AMENDMENT-06 §5).
+ */
+export class LinkURLNotHTTPS extends InvalidRequestError {}
+
+/** `link_url_too_long` — a link target is longer than `MAX_LINK_URL_RUNES`. */
+export class LinkURLTooLong extends InvalidRequestError {}
+
+/**
+ * `link_button_missing_url` — a button with style `link` carries no url, so
+ * there is nothing for the pill to open.
+ */
+export class LinkButtonMissingURL extends InvalidRequestError {}
+
+/**
+ * `url_on_non_link_button` — only a link button carries a url. Refused rather
+ * than ignored, matching the contract's stance that a typo is loud.
+ */
+export class URLOnNonLinkButton extends InvalidRequestError {}
+
+/** `invalid_button_emoji` — a button emoji is not a single unicode emoji. */
+export class InvalidButtonEmoji extends InvalidRequestError {}
+
+/**
+ * `embed_url_without_title` — an embed carries a url with no title for the tap
+ * to attach to.
+ */
+export class EmbedURLWithoutTitle extends InvalidRequestError {}
+
+/**
+ * `author_url_without_name` — an embed author carries a url with no name for
+ * the tap to attach to.
+ */
+export class AuthorURLWithoutName extends InvalidRequestError {}
+
+/**
+ * `embed_footer_text_required` — a footer carries an icon but no text, which
+ * would render a floating glyph on a line with nothing to say.
+ */
+export class EmbedFooterTextRequired extends InvalidRequestError {}
+
+/**
  * `embed_empty` — an embed carries none of a title, a description, a field or
  * a footer. A colour on its own is a coloured rectangle, not a message.
  */
@@ -218,6 +261,14 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   empty_text: EmptyText,
   text_too_long: TextTooLong,
   bot_link_not_allowed: BotLinkNotAllowed,
+  link_url_not_https: LinkURLNotHTTPS,
+  link_url_too_long: LinkURLTooLong,
+  link_button_missing_url: LinkButtonMissingURL,
+  url_on_non_link_button: URLOnNonLinkButton,
+  invalid_button_emoji: InvalidButtonEmoji,
+  embed_url_without_title: EmbedURLWithoutTitle,
+  author_url_without_name: AuthorURLWithoutName,
+  embed_footer_text_required: EmbedFooterTextRequired,
   invalid_json: InvalidJSON,
   parameter_missing: ParameterMissing,
   parameter_invalid: ParameterInvalid,

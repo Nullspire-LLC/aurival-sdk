@@ -701,3 +701,84 @@ def test_an_unknown_event_type_is_still_an_event_context() -> None:
     ctx = context_for(_event("some.brand.new.type", {"chat": {"id": "chat_9"}}), http=None)  # type: ignore[arg-type]
 
     assert isinstance(ctx, EventContext)
+
+
+# The truth table above is a hand port, and a hand port rots the moment L1
+# edits the server. This reads the server's own `TestValidEmoji` cases out of
+# the Go source and asserts our copy still says the same thing, row for row,
+# so a rule change on the backend fails here instead of shipping as an SDK
+# that quietly disagrees with the service it talks to.
+GO_EMOJI_TEST_FILE = (
+    Path(__file__).resolve().parents[3]
+    / "backend-go"
+    / "internal"
+    / "botapi"
+    / "emoji_test.go"
+)
+
+_GO_ROW = re.compile(r'\{("(?:[^"\\]|\\.)*"),\s*(.+?),\s*(true|false)\},')
+_GO_REPEAT = re.compile(r'strings\.Repeat\(("(?:[^"\\]|\\.)*"),\s*MaxButtonEmojiRunes\)')
+_GO_ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}
+
+
+def _unquote_go(literal: str) -> str:
+    """Go's double-quoted string form. Only the escapes the table actually
+    uses are handled, and anything else raises rather than being guessed at —
+    a silently mis-decoded literal would make this test pass on the wrong
+    string."""
+    out: list[str] = []
+    i = 1
+    while i < len(literal) - 1:
+        char = literal[i]
+        if char != "\\":
+            out.append(char)
+            i += 1
+            continue
+        kind = literal[i + 1]
+        if kind == "U":
+            out.append(chr(int(literal[i + 2 : i + 10], 16)))
+            i += 10
+        elif kind == "u":
+            out.append(chr(int(literal[i + 2 : i + 6], 16)))
+            i += 6
+        elif kind == "x":
+            out.append(chr(int(literal[i + 2 : i + 4], 16)))
+            i += 4
+        elif kind in _GO_ESCAPES:
+            out.append(_GO_ESCAPES[kind])
+            i += 2
+        else:
+            raise AssertionError(f"unhandled Go escape {literal[i : i + 2]!r} in {literal!r}")
+    return "".join(out)
+
+
+def _parse_go_emoji_table() -> list[tuple[str, str, bool]]:
+    source = GO_EMOJI_TEST_FILE.read_text(encoding="utf-8")
+    body = source[source.index("cases := []struct") : source.index("for _, c := range cases")]
+    rows: list[tuple[str, str, bool]] = []
+    for name_lit, value, want in _GO_ROW.findall(body):
+        repeat = _GO_REPEAT.fullmatch(value.strip())
+        if repeat:
+            emoji = _unquote_go(repeat.group(1)) * MAX_BUTTON_EMOJI_RUNES
+        elif value.strip().startswith('"'):
+            emoji = _unquote_go(value.strip())
+        else:
+            raise AssertionError(f"unparsed case value {value!r} — the regex is stale")
+        rows.append((_unquote_go(name_lit), emoji, want == "true"))
+    return rows
+
+
+def test_the_truth_table_is_still_the_servers_truth_table() -> None:
+    """Canonical-only: the public mirror ships `sdk/` alone, so the Go source
+    is not there to compare against. The table above keeps running in the
+    mirror either way — this guard only adds the drift check where the server
+    is on disk."""
+    if not GO_EMOJI_TEST_FILE.exists():
+        pytest.skip("backend-go/internal/botapi/emoji_test.go is not in this checkout (mirror)")
+    server = _parse_go_emoji_table()
+    assert server, "failed to parse TestValidEmoji out of emoji_test.go — the regex is stale"
+    assert server == [tuple(row) for row in _EMOJI_TRUTH_TABLE], (
+        "the SDK's emoji truth table no longer matches the server's TestValidEmoji. "
+        "The server is authoritative (AMENDMENT-06 §3): port the change, re-grade, and "
+        "never land an SDK check stricter than the server's."
+    )

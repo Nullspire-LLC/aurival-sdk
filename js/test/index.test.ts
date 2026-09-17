@@ -113,6 +113,14 @@ const EXPECTED = [
   'KeyAlreadyPaired',
   'KeyRevoked',
   'LinkButtonNotSupported',
+  'AuthorURLWithoutName',
+  'EmbedFooterTextRequired',
+  'EmbedURLWithoutTitle',
+  'InvalidButtonEmoji',
+  'LinkButtonMissingURL',
+  'LinkURLNotHTTPS',
+  'LinkURLTooLong',
+  'URLOnNonLinkButton',
   'MemberContext',
   'MemberPage',
   'Mention',
@@ -160,8 +168,8 @@ describe('the public surface', () => {
   // AMENDMENT-05 §2 then added fifteen error classes for the card's caps and
   // per-field refusals, all mirrored in both SDKs — 90 mirrored names plus
   // `MentionLike`.
-  it('is exactly the 90 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(91);
+  it('is exactly the 98 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(99);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),

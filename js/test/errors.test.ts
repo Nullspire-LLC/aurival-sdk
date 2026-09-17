@@ -41,6 +41,14 @@ import {
   KeyAlreadyPaired,
   KeyRevoked,
   LinkButtonNotSupported,
+  AuthorURLWithoutName,
+  EmbedFooterTextRequired,
+  EmbedURLWithoutTitle,
+  InvalidButtonEmoji,
+  LinkButtonMissingURL,
+  LinkURLNotHTTPS,
+  LinkURLTooLong,
+  URLOnNonLinkButton,
   MentionNotMember,
   MentionTokenMissing,
   MessageNotYours,
@@ -91,7 +99,7 @@ import {
 // `button_label_too_long`, `link_button_not_supported`,
 // `invalid_button_style`, `embed_title_too_long`,
 // `embed_description_too_long`, `embed_url_not_https`, `embed_empty`,
-// `buttons_without_message`, `button_already_used` — taking it to 53. This
+// `buttons_without_message`, `button_already_used` — taking it to 53, and AMENDMENT-06's eight new card codes take it to 61. This
 // literal is the acceptance bar for THAT number: a deleted or
 // silently-added class fails the length/key-set assertion below.
 const EXPECTED_CODES = [
@@ -145,6 +153,14 @@ const EXPECTED_CODES = [
   'embed_title_too_long',
   'embed_description_too_long',
   'embed_url_not_https',
+  'link_url_not_https',
+  'link_url_too_long',
+  'link_button_missing_url',
+  'url_on_non_link_button',
+  'invalid_button_emoji',
+  'embed_url_without_title',
+  'author_url_without_name',
+  'embed_footer_text_required',
   'embed_empty',
   'buttons_without_message',
   'button_already_used',
@@ -198,6 +214,14 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   duplicate_button_id: [DuplicateButtonID, 'invalid_request_error'],
   button_label_too_long: [ButtonLabelTooLong, 'invalid_request_error'],
   link_button_not_supported: [LinkButtonNotSupported, 'invalid_request_error'],
+  link_url_not_https: [LinkURLNotHTTPS, 'invalid_request_error'],
+  link_url_too_long: [LinkURLTooLong, 'invalid_request_error'],
+  link_button_missing_url: [LinkButtonMissingURL, 'invalid_request_error'],
+  url_on_non_link_button: [URLOnNonLinkButton, 'invalid_request_error'],
+  invalid_button_emoji: [InvalidButtonEmoji, 'invalid_request_error'],
+  embed_url_without_title: [EmbedURLWithoutTitle, 'invalid_request_error'],
+  author_url_without_name: [AuthorURLWithoutName, 'invalid_request_error'],
+  embed_footer_text_required: [EmbedFooterTextRequired, 'invalid_request_error'],
   invalid_button_style: [InvalidButtonStyle, 'invalid_request_error'],
   embed_title_too_long: [EmbedTitleTooLong, 'invalid_request_error'],
   embed_description_too_long: [EmbedDescriptionTooLong, 'invalid_request_error'],
@@ -220,7 +244,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 53-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 61-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });
