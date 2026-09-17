@@ -74,14 +74,22 @@ machine you revoke; a leaked token would be the bot.
 bot.command('say', async (ctx) => {
   ctx.command; // "say"
   ctx.arguments; // the raw rest of the line, unparsed, possibly ""
-  ctx.chat; // { id, type, name }
-  ctx.sender; // { id, handle, name }
+  ctx.chat; // { id, type, name, member_count }
+  ctx.sender; // { id, handle, name } — always set
   ctx.message.text; // "/say hi" — the invoking message, verbatim
   await ctx.reply('…');
 });
 ```
 
-`ctx.message` is now the invoking message itself: `ctx.message.id`, `.text`, `.sent_at`, `.sender`, and `.reply_to` (the id of the message it quoted, or `null`) — or, for an event that carries none, `ctx.message` itself is `null` and none of those fields are reachable. `ctx.reply()` still quotes it by id, so an answer never floats free in a busy chat. There is no flag: on the rare event that carries no message id it sends a plain message instead.
+`ctx.message` is the invoking message itself: `ctx.message.id`, `.text`, `.sent_at`, `.sender`,
+and `.reply_to` (the id of the message it quoted, or `null`). `ctx.reply()` quotes it by id, so
+an answer never floats free in a busy chat. On an event that is about no message — someone
+joining, someone adding the bot — there is nothing to quote and the reply is sent plain. There
+is no flag for it: the context knows which message its event is about, or knows there is none.
+
+`ctx.chat.member_count` is the chat's live participant count, bots included. It is a number on
+every event the server sends today, and `null` only on a frame that omitted it — never
+defaulted to 0, because a genuinely empty chat is still a number.
 
 Handlers run concurrently, and an event is acked only after its handler settles — so a
 crash mid-handler redelivers rather than loses. **Do not block inside a handler.** A
@@ -110,76 +118,88 @@ goes through `bot.on(type, fn)`:
 
 ```ts
 bot.on('member.joined', async (ctx) => {
-  await ctx.send(ctx.chat.id, `welcome, ${ctx.user?.handle}`);
+  await ctx.send(ctx.chat, `welcome, ${ctx.user.handle}`);
 });
 
 bot.on('member.left', async (ctx) => {
-  console.log(ctx.user?.handle, 'left', ctx.chat.id);
+  console.log(ctx.user.handle, 'left', ctx.chat.id);
 });
 
 bot.on('bot.added', async (ctx) => {
-  await ctx.send(ctx.chat.id, `thanks for adding me, ${ctx.actor?.handle}`);
+  await ctx.send(ctx.chat, `thanks for adding me, ${ctx.actor.handle}`);
 });
 
 bot.on('bot.removed', async (ctx) => {
-  console.log(ctx.actor?.handle, 'removed me from', ctx.chat.id);
+  console.log(ctx.actor.handle, 'removed me from', ctx.chat.id);
 });
 
 bot.on('reaction.added', async (ctx) => {
-  console.log(ctx.sender?.handle, 'reacted', ctx.emoji, 'on', ctx.message?.id);
+  console.log(ctx.sender.handle, 'reacted', ctx.emoji, 'on', ctx.message.id);
 });
 ```
 
-One `Context` for every event type. Only the fields that event actually carries are
-populated — everything else is `null`:
+None of those handlers annotates `ctx`. The event name is what picks the class, so the editor
+offers the five names as you type `bot.on('`, and then knows what `ctx` holds. A handler
+defined somewhere else names its class itself:
 
-| event             | `ctx.chat` | `ctx.sender` | `ctx.user` | `ctx.actor` | `ctx.message` | `ctx.emoji` |
-| ----------------- | ---------- | ------------ | ---------- | ----------- | ------------- | ----------- |
-| `command.invoked` | ✓          | ✓            |            |             | ✓             |             |
-| `member.joined`   | ✓          |              | ✓          |             |               |             |
-| `member.left`     | ✓          |              | ✓          |             |               |             |
-| `bot.added`       | ✓          |              |            | ✓           |               |             |
-| `bot.removed`     | ✓          |              |            | ✓           |               |             |
-| `reaction.added`  | ✓          | ✓            |            |             | ✓             | ✓           |
+```ts
+import type { MemberContext } from 'aurival';
 
-An event type this SDK does not know about yet is never fatal — `bot.on()` a type the
-server hasn't invented yet and, if it starts sending it, the handler runs with whatever
-fields it happens to carry. There is no `reaction.removed` event: un-reacting is silent.
+async function onLeft(ctx: MemberContext): Promise<void> {
+  console.log(ctx.user.handle, 'left', ctx.chat.id);
+}
+
+bot.on('member.left', onLeft);
+```
+
+| event                           | `ctx`             | beside `ctx.chat` and `ctx.event`                                 |
+| ------------------------------- | ----------------- | ----------------------------------------------------------------- |
+| `command.invoked`               | `Context`         | `command`, `arguments`, `sender`, `message`                       |
+| `member.joined` / `member.left` | `MemberContext`   | `user`                                                            |
+| `bot.added` / `bot.removed`     | `BotContext`      | `actor`                                                           |
+| `reaction.added`                | `ReactionContext` | `sender`, `message` (id only, the text is not re-sent), `emoji`   |
+| anything else                   | `EventContext`    | `sender`, `user`, `actor`, `message`, `emoji` — each one nullable |
+
+Each class carries only its own family's fields, and every one of them is set. That is the
+whole point: your editor tells you what `ctx` has, so you never read a doc to find out, and
+you never guard a field that is always there. `ctx.emoji` in a member handler is a compile
+error rather than a runtime `undefined`, and so is a `bot.added` handler registered for
+`member.joined`.
+
+An event type this SDK does not know about yet is never fatal — `bot.on()` a type the server
+hasn't invented yet and, if it starts sending it, the handler runs with an `EventContext`
+holding whatever fields the frame happened to carry. Nothing is pinned there, so everything is
+nullable and you narrow before you read. There is no `reaction.removed` event: un-reacting is
+silent.
 
 ## Actions
 
-Every action is available on a handler's `ctx`. `ctx.chat.member_count` carries the chat's
-live participant count, so you don't need a separate call to know how many people are in it:
-
-The typing indicator is also automatic (0.2.1): a command handler still running 300 ms after
-it started shows the chat "is thinking", and the indicator clears when the handler returns,
-including on a throw. A handler that replies inside those 300 ms sends nothing, so a fast bot
-never flickers. `new Bot({ autoTyping: false })` turns it off if you would rather drive
-`ctx.withTyping()` yourself.
+Every action is available on a handler's `ctx`, whichever class it is — they live on the shared
+base, so `ctx.reply()` reads the same in a command as in a `member.joined`.
 
 ```ts
+bot.command('fix', async (ctx) => {
+  const sent = await ctx.reply('working on it…');
+  await ctx.edit(sent, 'done!');
+});
+
+bot.command('oops', async (ctx) => {
+  await ctx.delete(ctx.message);
+});
+
+bot.command('upvote', async (ctx) => {
+  await ctx.react(ctx.message, '\u{1F44D}');
+});
+
+bot.command('downvote', async (ctx) => {
+  await ctx.unreact(ctx.message, '\u{1F44D}');
+});
+
 bot.command('busy', async (ctx) => {
   await ctx.withTyping(async () => {
     // ... slow work, e.g. calling out to another service ...
     await ctx.reply(`done, and there are ${ctx.chat.member_count} of us in here`);
   });
-});
-
-bot.command('fix', async (ctx) => {
-  const sent = await ctx.reply('working on it...');
-  await ctx.edit(String(sent['id']), 'done!');
-});
-
-bot.command('oops', async (ctx) => {
-  if (ctx.message) await ctx.delete(ctx.message);
-});
-
-bot.command('upvote', async (ctx) => {
-  if (ctx.message) await ctx.react(ctx.message, '\u{1F44D}');
-});
-
-bot.command('downvote', async (ctx) => {
-  if (ctx.message) await ctx.unreact(ctx.message, '\u{1F44D}');
 });
 
 bot.command('roster', async (ctx) => {
@@ -188,18 +208,29 @@ bot.command('roster', async (ctx) => {
   // (CONTRACT-V1 §4), and inferring "more pages" from the cursor is exactly
   // the off-by-one every other SDK ships.
   const handles: string[] = [];
-  let cursor: string | undefined;
+  let cursor: string | null = null;
   for (;;) {
-    const page = await ctx.members(undefined, { cursor });
+    const page = await ctx.members(undefined, cursor === null ? {} : { cursor });
     handles.push(...page.users.map((u) => u.handle));
     if (!page.hasMore) break;
-    cursor = page.nextCursor ?? undefined;
+    cursor = page.nextCursor;
   }
   await ctx.reply(handles.join(', '));
 });
 ```
 
-`ctx.typing(true | false)` and `ctx.withTyping(fn)` toggle the typing indicator — `withTyping`
+`reply()`, `send()` and `edit()` return the message they stored, so `sent` is what you hand
+straight back to `edit()`, `delete()` and `react()` — no id juggling. The `sender` on one of
+those, when it is set at all, is known by id alone — `handle` and `name` are empty strings,
+because the REST entity names the sender with a bare `usr_…`.
+
+The typing indicator is automatic: a command handler still running 300 ms after it started
+shows the chat "is thinking", and the indicator clears when the handler returns, including on a
+throw. A handler that replies inside those 300 ms sends nothing, so a fast bot never flickers.
+`new Bot({ autoTyping: false })` turns it off if you would rather drive `ctx.withTyping()`
+yourself.
+
+`ctx.typing(true | false)` and `ctx.withTyping(fn)` toggle the indicator by hand — `withTyping`
 sends `true` on entry and `false` on exit, always, even if `fn` throws.
 
 `@`-mention someone with `mention(user)` — it template-literals straight into `text` as
@@ -208,28 +239,46 @@ sends `true` on entry and `false` on exit, always, even if `fn` throws.
 ```ts
 import { mention } from 'aurival';
 
-bot.command('thanks', async (ctx) => {
-  if (!ctx.sender) return; // no sender on this event type — nothing to thank
-  await ctx.send(ctx.chat, `thanks, ${mention(ctx.sender)}!`, {
-    mentions: [mention(ctx.sender)],
-  });
+bot.on('member.joined', async (ctx) => {
+  const who = mention(ctx.user);
+  await ctx.send(ctx.chat, `welcome, ${who}!`, { mentions: [who] });
 });
 ```
 
-> **0.2.0 breaking change:** `ctx.sender` is now `User | null` (was `User`). The single
-> `Context` class is shared across every event type, and `sender` is genuinely absent on
-> `member.joined`/`member.left`/`bot.added`/`bot.removed` (see the table above) — so it can
-> no longer be typed as always-present. Narrow it before use:
->
-> ```ts
-> // 0.1.x — ctx.sender.handle compiled unconditionally.
-> console.log(ctx.sender.handle);
->
-> // 0.2.0 — narrow first (an early return, as in the `thanks` example above,
-> // or an `if (ctx.sender)` guard around the rest of the handler).
-> if (!ctx.sender) return;
-> console.log(ctx.sender.handle);
-> ```
+## Upgrading from 0.2.x
+
+There is one `Context` per event family now, instead of one class for every event with most of
+its fields `null`. Three things change in code you already wrote.
+
+`ctx.sender` in a command handler is a `User` again, not `User | null`. The narrowing 0.2.0
+asked for was an artefact of the shared class — the server never sends a command without a
+sender, and now the type says so. Drop the guard:
+
+```ts
+bot.command('thanks', async (ctx) => {
+  // 0.2.x — if (!ctx.sender) return;
+  await ctx.reply(`thanks, ${ctx.sender.handle}!`);
+});
+```
+
+`ctx.user`, `ctx.actor` and `ctx.emoji` no longer exist on `Context`. They live on the class for
+the family that actually delivers them, where they are never `null`, so an optional read becomes
+a plain one:
+
+```ts
+bot.on('member.joined', async (ctx) => {
+  // 0.2.x — ctx.user?.handle
+  console.log(ctx.user.handle, 'joined');
+});
+```
+
+`Context.fromGenericEvent()` is gone, and nothing replaces it. Choosing the class for an event
+is the SDK's job, not yours — where 0.2.x called `Context.fromGenericEvent(event, http)`, 0.3.0
+calls nothing, because `bot.on()` hands your handler the right context already built.
+
+One thing that is not a break, but is worth knowing if you pinned to it: `version` reports
+`'0.3.0'`. In 0.2.1 it still said `'0.2.0'`, which was simply wrong; a test pins it to
+`package.json` now, so it cannot drift again.
 
 ## Shadowed commands
 
@@ -296,7 +345,7 @@ and "zero runtime dependencies" could not both be true.
 
 ```
 $ npm ls --omit=dev
-aurival@0.2.0
+aurival@0.3.0
 └── (empty)
 ```
 

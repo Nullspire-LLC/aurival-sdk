@@ -1,6 +1,6 @@
-"""Generic (non-`command.invoked`) events: registration on `Bot`, the typed
-`Context` each event type gets, and the three ack cases the socket now has to
-pick between (R2). `command.invoked` dispatch itself is unchanged and stays
+"""Generic (non-`command.invoked`) events: registration on `Bot`, the context
+class each event family gets (BA-R68), and the three ack cases the socket now
+has to pick between (R2). `command.invoked` dispatch itself is unchanged and stays
 covered by `test_bot.py`; this file only adds the new surface.
 """
 
@@ -13,7 +13,18 @@ import pytest
 
 from aurival.bot import Bot
 from aurival.errors import AurivalError
-from aurival.events import Context, Event, MemberPage, User, mention
+from aurival.events import (
+    BotContext,
+    Context,
+    Event,
+    EventContext,
+    MemberContext,
+    MemberPage,
+    ReactionContext,
+    User,
+    context_for,
+    mention,
+)
 from aurival.socket import Socket
 
 
@@ -70,10 +81,10 @@ class _StubHttp:
 async def test_bot_on_decorator_receives_a_populated_context() -> None:
     bot = Bot()
     bot._http = _StubHttp()  # type: ignore[assignment]
-    seen: list[Context] = []
+    seen: list[MemberContext] = []
 
     @bot.on("member.joined")
-    async def handler(ctx: Context) -> None:
+    async def handler(ctx: MemberContext) -> None:
         seen.append(ctx)
 
     await bot._dispatch(
@@ -89,6 +100,7 @@ async def test_bot_on_decorator_receives_a_populated_context() -> None:
 
     assert len(seen) == 1
     ctx = seen[0]
+    assert isinstance(ctx, MemberContext)
     assert ctx.user == User(id="usr_9", handle="newkid", name="New Kid")
     assert ctx.chat is not None
     assert ctx.chat.member_count == 4
@@ -100,7 +112,7 @@ async def test_bot_on_direct_call_registers_too() -> None:
     bot._http = _StubHttp()  # type: ignore[assignment]
     called = asyncio.Event()
 
-    async def handler(ctx: Context) -> None:
+    async def handler(ctx: MemberContext) -> None:
         called.set()
 
     bot.on("member.left", handler)
@@ -142,7 +154,7 @@ def test_on_accepts_reaction_removed_as_forward_compatible() -> None:
     bot = Bot()
 
     @bot.on("reaction.removed")
-    async def handler(ctx: Context) -> None:
+    async def handler(ctx: EventContext) -> None:
         pass
 
     assert bot._has_event_handler("reaction.removed")
@@ -155,11 +167,11 @@ async def test_multiple_handlers_on_one_type_run_in_registration_order() -> None
     order: list[str] = []
 
     @bot.on("member.joined")
-    async def first(ctx: Context) -> None:
+    async def first(ctx: MemberContext) -> None:
         order.append("first")
 
     @bot.on("member.joined")
-    async def second(ctx: Context) -> None:
+    async def second(ctx: MemberContext) -> None:
         order.append("second")
 
     await bot._dispatch(
@@ -185,10 +197,12 @@ async def test_an_unknown_event_type_is_ignored_not_fatal() -> None:
 
 
 def test_context_for_an_unknown_type_with_nothing_recognizable_never_raises() -> None:
-    ctx = Context.from_event(_event("some.future.type", {"a": 1}), http=_StubHttp())
-    # `chat` stays a plain `Chat`, never `Chat | None` (0.1.8's typed surface,
-    # e.g. `ctx.chat.id`, must keep working) — an unrecognized type just gets
-    # an empty one, id `""`.
+    ctx = context_for(_event("some.future.type", {"a": 1}), http=_StubHttp())  # type: ignore[arg-type]
+    # An unknown type gets `EventContext`, every field optional. `chat` stays
+    # a plain `Chat`, never `Chat | None` (0.1.8's typed surface, e.g.
+    # `ctx.chat.id`, must keep working) — an unrecognized type just gets an
+    # empty one, id `""`.
+    assert isinstance(ctx, EventContext)
     assert ctx.chat.id == ""
     assert ctx.sender is None
     assert ctx.user is None
@@ -201,7 +215,7 @@ def test_context_for_an_unknown_type_populates_whatever_it_recognizably_carries(
     """"Ignored, not fatal" means opportunistic, not empty: a future eighth
     event type still hands a developer whatever familiar-shaped fields it
     carries."""
-    ctx = Context.from_event(
+    ctx = context_for(
         _event(
             "future.thing",
             {
@@ -212,8 +226,9 @@ def test_context_for_an_unknown_type_populates_whatever_it_recognizably_carries(
                 "message": "msg_1",
             },
         ),
-        http=_StubHttp(),
+        http=_StubHttp(),  # type: ignore[arg-type]
     )
+    assert isinstance(ctx, EventContext)
     assert ctx.chat.id == "chat_1"
     assert ctx.user == User(id="usr_1", handle="a", name="A")
     assert ctx.actor == User(id="usr_2", handle="b", name="B")
@@ -222,35 +237,68 @@ def test_context_for_an_unknown_type_populates_whatever_it_recognizably_carries(
     assert ctx.message.id == "msg_1"
 
 
-# --- typed accessors per event type (R6) ------------------------------------
+# --- one context class per event family (BA-R68) ---------------------------
 
 
-def test_bot_added_populates_actor_not_sender() -> None:
-    ctx = Context.from_event(
+def test_bot_added_builds_a_bot_context_with_the_actor() -> None:
+    ctx = context_for(
         _event("bot.added", {
             "chat": {"id": "chat_1", "type": "group", "name": None},
             "actor": {"id": "usr_2", "handle": "owner", "name": "Owner"},
         }),
-        http=_StubHttp(),
+        http=_StubHttp(),  # type: ignore[arg-type]
     )
+    assert isinstance(ctx, BotContext)
     assert ctx.actor == User(id="usr_2", handle="owner", name="Owner")
-    assert ctx.sender is None
+    # The class carries only what `bot.*` delivers: no `sender`, no `user`,
+    # no `emoji`, so autocomplete never offers a field that is always empty.
+    assert not hasattr(ctx, "sender")
+    assert not hasattr(ctx, "user")
+    assert not hasattr(ctx, "emoji")
 
 
-def test_reaction_added_populates_chat_sender_message_emoji() -> None:
-    ctx = Context.from_event(
+def test_reaction_added_builds_a_reaction_context() -> None:
+    ctx = context_for(
         _event("reaction.added", {
             "chat": {"id": "chat_1", "type": "group", "name": None},
             "message": "msg_77",
             "emoji": "\U0001F44D",
             "sender": {"id": "usr_3", "handle": "liker", "name": "Liker"},
         }),
-        http=_StubHttp(),
+        http=_StubHttp(),  # type: ignore[arg-type]
     )
+    assert isinstance(ctx, ReactionContext)
     assert ctx.emoji == "\U0001F44D"
-    assert ctx.message is not None
     assert ctx.message.id == "msg_77"
     assert ctx.sender == User(id="usr_3", handle="liker", name="Liker")
+
+
+def test_a_known_family_pins_its_fields_even_when_the_frame_is_short() -> None:
+    """A guaranteed field is typed as present, so a malformed frame yields an
+    empty entity rather than `None` — the same rule `chat` has always had."""
+    ctx = context_for(_event("member.joined", {"chat": {"id": "chat_1"}}), http=_StubHttp())  # type: ignore[arg-type]
+    assert isinstance(ctx, MemberContext)
+    assert ctx.user == User(id="", handle="", name="")
+    ctx2 = context_for(_event("reaction.added", {}), http=_StubHttp())  # type: ignore[arg-type]
+    assert isinstance(ctx2, ReactionContext)
+    assert ctx2.message.id == ""
+    assert ctx2.emoji == ""
+
+
+def test_command_invoked_still_builds_the_command_context() -> None:
+    ctx = context_for(
+        _event("command.invoked", {
+            "command": "ping",
+            "arguments": "",
+            "chat": {"id": "chat_1", "type": "direct", "name": None},
+            "sender": {"id": "usr_1", "handle": "g", "name": "G"},
+            "message": "msg_1",
+        }),
+        http=_StubHttp(),  # type: ignore[arg-type]
+    )
+    assert isinstance(ctx, Context)
+    assert ctx.sender.handle == "g"
+    assert ctx.message.id == "msg_1"
 
 
 # --- R5: chat.member_count -----------------------------------------------
@@ -368,14 +416,16 @@ async def test_ack_case_c_backlog_overflowed_stays_unacked() -> None:
 # --- R7: Context actions -----------------------------------------------------
 
 
-def _member_joined_ctx() -> Context:
-    return Context.from_event(
+def _member_joined_ctx() -> MemberContext:
+    ctx = context_for(
         _event("member.joined", {
             "chat": {"id": "chat_1", "type": "group", "name": None},
             "user": {"id": "usr_9", "handle": "newkid", "name": "New Kid"},
         }),
-        http=_StubHttp(),
+        http=_StubHttp(),  # type: ignore[arg-type]
     )
+    assert isinstance(ctx, MemberContext)
+    return ctx
 
 
 @pytest.mark.asyncio
@@ -501,7 +551,7 @@ async def test_a_raising_generic_handler_reaches_the_error_hook_and_survives() -
     bot._http = _StubHttp()  # type: ignore[assignment]
 
     @bot.on("member.joined")
-    async def boom(ctx: Context) -> None:
+    async def boom(ctx: MemberContext) -> None:
         raise RuntimeError("handler blew up")
 
     @bot.on_error
@@ -525,7 +575,7 @@ async def test_a_raising_generic_handler_still_acks_exactly_once_through_the_soc
     bot._http = _StubHttp()  # type: ignore[assignment]
 
     @bot.on("member.joined")
-    async def boom(ctx: Context) -> None:
+    async def boom(ctx: MemberContext) -> None:
         raise RuntimeError("handler blew up")
 
     ws = _FakeWs()

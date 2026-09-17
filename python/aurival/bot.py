@@ -12,10 +12,11 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, overload
+from typing import Any, ClassVar, overload
 
 import aiohttp
 
+from . import events as _events
 from .auth import Auth, KeyFile, machine_label, pair, resolve_host
 from .errors import (
     AurivalAPIError,
@@ -25,7 +26,20 @@ from .errors import (
     RateLimitError,
     SessionSuperseded,
 )
-from .events import Command, Context, Event, Message
+from .events import (
+    AnyContext,
+    BotContext,
+    BotEventType,
+    Command,
+    Context,
+    Event,
+    EventContext,
+    MemberContext,
+    MemberEventType,
+    ReactionContext,
+    ReactionEventType,
+    context_for,
+)
 from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
 from .status import StatusReporter
@@ -37,10 +51,19 @@ from .status import StatusReporter
 MAX_COMMANDS = 50
 
 Handler = Callable[[Context], Awaitable[None]]
+MemberHandler = Callable[[MemberContext], Awaitable[None]]
+BotHandler = Callable[[BotContext], Awaitable[None]]
+ReactionHandler = Callable[[ReactionContext], Awaitable[None]]
+EventHandler = Callable[[EventContext], Awaitable[None]]
+# What the registry stores: every `on()` handler, whatever context class its
+# overload promised it. `Any` because the overloads are the typed door and the
+# registry is behind it — and because the plain-`str` overload has to accept
+# any handler at all, or the checker reports it as overlapping the typed ones.
+_AnyHandler = Callable[[Any], Awaitable[None]]
 # The hook also receives a `backlog.overflowed` Event, which is operational
 # rather than an exception — it never reaches a handler (SDK-28).
 Reportable = BaseException | Event
-ErrorHook = Callable[[Reportable, Context | None], Awaitable[None] | None]
+ErrorHook = Callable[[Reportable, AnyContext | None], Awaitable[None] | None]
 
 # How long a clean shutdown waits for handlers that are still running (SDK-32).
 SHUTDOWN_GRACE_SECONDS = 10.0
@@ -78,12 +101,13 @@ class Bot:
     # A convenience alias so `Bot.Context` resolves for a developer who only
     # imported `Bot` — the annotated signature everywhere else in the docs is
     # still `from aurival import Bot, Context`, this is a fallback, not the
-    # taught path.
-    Context = Context
+    # taught path. Annotated through the module so the class-body name does
+    # not shadow the type in the method signatures below.
+    Context: ClassVar[type[_events.Context]] = _events.Context
 
     # Same reasoning as `Context` above: `Bot.Message` resolves for a
     # developer who only imported `Bot`, without requiring a second import.
-    Message = Message
+    Message: ClassVar[type[_events.Message]] = _events.Message
 
     def __init__(
         self,
@@ -101,7 +125,7 @@ class Bot:
         # the delay sends nothing, so a fast bot never flickers. `False` keeps
         # typing entirely in the developer's hands (`async with ctx.typing()`).
         self._auto_typing = auto_typing
-        self._event_handlers: dict[str, list[Handler]] = {}
+        self._event_handlers: dict[str, list[_AnyHandler]] = {}
         self._error_hook: ErrorHook | None = None
         self._log = logger or _log
         self._host = host
@@ -144,31 +168,67 @@ class Bot:
         "backlog.overflowed": "operational only — never reaches a handler (SDK-28)",
     }
 
+    # One overload pair per event family, so `bot.on("` completes the five
+    # known types and the handler is typed for exactly the context that type
+    # delivers — `MemberContext` for `member.*`, `BotContext` for `bot.*`,
+    # `ReactionContext` for `reaction.added`. The plain-`str` pair at the end
+    # is the forward-compatibility door: a type this SDK does not know yet
+    # still registers, and its handler receives an `EventContext`. That pair
+    # takes `Any` for the handler on purpose — the checker would otherwise
+    # report the `str` overload as overlapping the literal ones.
     @overload
-    def on(self, event_type: str) -> Callable[[Handler], Handler]: ...
+    def on(self, event_type: MemberEventType) -> Callable[[MemberHandler], MemberHandler]: ...  # type: ignore[overload-overlap]
 
     @overload
-    def on(self, event_type: str, fn: Handler) -> Handler: ...
+    def on(self, event_type: MemberEventType, fn: MemberHandler) -> MemberHandler: ...
 
-    def on(
-        self, event_type: str, fn: Handler | None = None
-    ) -> Handler | Callable[[Handler], Handler]:
-        """Register a handler for a generic event (`member.joined`,
-        `member.left`, `bot.added`, `bot.removed`, `reaction.added`, and any
-        future additive type) — as a decorator, `@bot.on("member.joined")`,
-        or a direct call, `bot.on("member.joined", fn)`. Distinct registry
-        from `@bot.command`; multiple handlers for the same type are all run,
-        in registration order. `command.invoked` itself is not routed
-        through here — use `@bot.command`.
+    @overload
+    def on(self, event_type: BotEventType) -> Callable[[BotHandler], BotHandler]: ...  # type: ignore[overload-overlap]
 
-        Raises `AurivalError` at registration time for a type that can
-        NEVER run (see `_UNREGISTERABLE_EVENT_TYPES`) — a handler that
-        silently never fires is worse than one that fails loudly on
-        `run()`. A type that merely doesn't exist on the wire yet is not
-        refused: an event type this SDK doesn't recognize still builds a
-        `Context` opportunistically (see `Context.from_event`), so a handler
-        registered ahead of the server shipping it is forward-compatible,
-        not dead."""
+    @overload
+    def on(self, event_type: BotEventType, fn: BotHandler) -> BotHandler: ...
+
+    @overload
+    def on(self, event_type: ReactionEventType) -> Callable[[ReactionHandler], ReactionHandler]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def on(self, event_type: ReactionEventType, fn: ReactionHandler) -> ReactionHandler: ...
+
+    # The plain-`str` pair is the forward-compatibility door: a type this SDK
+    # does not name yet gets an `EventContext`. Typed against `EventHandler`,
+    # not `Any`, so a handler of the wrong family is refused in the direct-call
+    # form too. mypy flags the literal decorator forms above as overlapping
+    # this one (a literal is a `str`, and the returned decorators differ);
+    # that overlap is the intent, the literal wins when it matches, hence the
+    # three `overload-overlap` ignores.
+    @overload
+    def on(self, event_type: str) -> Callable[[EventHandler], EventHandler]: ...
+
+    @overload
+    def on(self, event_type: str, fn: EventHandler) -> EventHandler: ...
+
+    def on(self, event_type: str, fn: Any = None) -> Any:
+        """Register a handler for an event other than a command — as a
+        decorator, `@bot.on("member.joined")`, or a direct call,
+        `bot.on("member.joined", fn)`. Each type hands its handler the
+        context class made for it:
+
+            member.joined, member.left   MemberContext    ctx.user
+            bot.added, bot.removed       BotContext       ctx.actor
+            reaction.added               ReactionContext  ctx.sender, ctx.message, ctx.emoji
+            anything else                EventContext     every field optional
+
+        Distinct registry from `@bot.command`; multiple handlers for the same
+        type all run, in registration order. `command.invoked` itself is not
+        routed through here — use `@bot.command`.
+
+        Raises `AurivalError` at registration time for a type that can NEVER
+        run (see `_UNREGISTERABLE_EVENT_TYPES`) — a handler that silently
+        never fires is worse than one that fails loudly on `run()`. A type
+        that merely doesn't exist on the wire yet is not refused: it builds
+        an `EventContext` opportunistically the day the server ships it, so a
+        handler registered ahead of the server is forward-compatible, not
+        dead."""
         reason = self._UNREGISTERABLE_EVENT_TYPES.get(event_type)
         if reason is not None:
             raise AurivalError(f"bot.on({event_type!r}, ...) can never run: {reason}")
@@ -177,7 +237,7 @@ class Bot:
             self._event_handlers.setdefault(event_type, []).append(fn)
             return fn
 
-        def decorate(inner: Handler) -> Handler:
+        def decorate(inner: _AnyHandler) -> _AnyHandler:
             self._event_handlers.setdefault(event_type, []).append(inner)
             return inner
 
@@ -404,7 +464,7 @@ class Bot:
 
     # -- auto-typing (SDK-41) ----------------------------------------------
 
-    def _start_auto_typing(self, ctx: Context) -> _AutoTyping | None:
+    def _start_auto_typing(self, ctx: _events.Context) -> _AutoTyping | None:
         if not self._auto_typing or not ctx.chat.id:
             return None
         state = _AutoTyping()
@@ -423,7 +483,7 @@ class Bot:
         state.task = asyncio.create_task(arm())
         return state
 
-    async def _stop_auto_typing(self, state: _AutoTyping | None, ctx: Context) -> None:
+    async def _stop_auto_typing(self, state: _AutoTyping | None, ctx: _events.Context) -> None:
         if state is None or state.task is None:
             return
         if not state.armed:
@@ -481,21 +541,21 @@ class Bot:
         if not handlers:
             return
         assert self._http is not None
-        ctx = Context.from_event(event, http=self._http)
+        generic = context_for(event, http=self._http)
         for handler in handlers:
             try:
-                await handler(ctx)
+                await handler(generic)
             # Same rule as a command handler: one bad handler is not an outage.
             except Exception as exc:
                 self._log.exception("handler for event %r raised", event.type)
-                await self._call_error_hook(exc, ctx)
+                await self._call_error_hook(exc, generic)
 
     def _on_problem(self, error: AurivalAPIError | Event) -> None:
         task = asyncio.create_task(self._call_error_hook(error, None))
         self._inflight.add(task)
         task.add_done_callback(self._inflight.discard)
 
-    async def _call_error_hook(self, error: Reportable, ctx: Context | None) -> None:
+    async def _call_error_hook(self, error: Reportable, ctx: AnyContext | None) -> None:
         if self._error_hook is None:
             return
         try:

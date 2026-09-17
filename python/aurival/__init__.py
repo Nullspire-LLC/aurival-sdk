@@ -69,10 +69,27 @@ from .errors import (
     UnknownParameter,
     from_envelope,
 )
-from .events import Chat, Command, Context, Event, MemberPage, Mention, Message, User, mention
+from .events import (
+    AnyContext,
+    BaseContext,
+    BotContext,
+    Chat,
+    Command,
+    Context,
+    Event,
+    EventContext,
+    EventType,
+    MemberContext,
+    MemberPage,
+    Mention,
+    Message,
+    ReactionContext,
+    User,
+    mention,
+)
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -86,6 +103,7 @@ __all__ = [
     "AccessTokenExpired",
     "AccessTokenInvalid",
     "AckUnknownEvent",
+    "AnyContext",
     "AssertionExpired",
     "AssertionReplay",
     "AurivalAPIError",
@@ -94,7 +112,9 @@ __all__ = [
     "BadAssertion",
     "BadProof",
     "BadPublicKey",
+    "BaseContext",
     "Bot",
+    "BotContext",
     "BotLinkNotAllowed",
     "BotPlaygroundOnly",
     "BotSuspended",
@@ -104,6 +124,8 @@ __all__ = [
     "Context",
     "EmptyText",
     "Event",
+    "EventContext",
+    "EventType",
     "FrameInvalid",
     "FrameTooLarge",
     "IdempotencyKeyInvalid",
@@ -115,6 +137,7 @@ __all__ = [
     "InvalidRequestError",
     "KeyAlreadyPaired",
     "KeyRevoked",
+    "MemberContext",
     "MemberPage",
     "Mention",
     "MentionNotMember",
@@ -129,6 +152,7 @@ __all__ = [
     "ProtocolError",
     "RateLimitError",
     "RateLimited",
+    "ReactionContext",
     "ReactionEmojiTooLong",
     "ServerRestarting",
     "SessionSuperseded",

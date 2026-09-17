@@ -77,34 +77,22 @@ machine you revoke; a leaked token would be the bot.
 
 ```python
 @bot.command("say")
-async def say(ctx: Context):
-    ctx.command    # "say"
-    ctx.arguments  # the raw rest of the line, unparsed, possibly ""
-    ctx.chat       # Chat(id, type, name)
-    ctx.sender     # User(id, handle, name) — always set for command.invoked, but see below
+async def say(ctx: Context) -> None:
+    ctx.command       # "say"
+    ctx.arguments     # the raw rest of the line, unparsed, possibly ""
+    ctx.chat          # Chat(id, type, name, member_count)
+    ctx.sender        # User(id, handle, name) — always set
     ctx.message.text  # "/say hi" — the invoking message, verbatim
     await ctx.reply("…")
 ```
 
-`ctx.message` now arrives in full: a `Message` with `ctx.message.id`, `.text`, `.sent_at`, `.sender`, and `.reply_to` (the id of the message it quoted, or `None`) — or, for an event that carries none, `ctx.message.id` and the rest are unreachable because `ctx.message` itself is `None`. `ctx.reply()` still quotes it by id by default, so an answer never floats free in a busy chat — there is no flag; on the rare event with no message id it sends a plain message instead.
-
-### Breaking change in 0.2.0: `ctx.sender` is now optional
-
-`ctx.sender` is `User | None`, not `User`. `Context` is one class for every event type
-(0.2.0 added `member.*`, `bot.*`, `reaction.added` alongside `command.invoked` — see
-[Events beyond commands](#events-beyond-commands)), and `member.joined`/`member.left` and
-`bot.added`/`bot.removed` genuinely have no sender — they carry `ctx.user` or `ctx.actor`
-instead. `command.invoked` still always populates it, but the type has to admit the honest
-case, so a caller in a `py.typed`/mypy-strict codebase needs to narrow it before touching
-`.handle` or `.id`:
-
-```python
-if ctx.sender is not None:
-    print(ctx.sender.handle)
-```
-
-inside a `@bot.command` handler this is always true in practice, but the type checker has
-no way to know that from `Context` alone.
+`ctx.sender` and `ctx.message` are plain `User` and `Message`, never `None` — `command.invoked`
+always carries both, so a type that admitted `None` would only make you narrow something that
+is always there. `ctx.message` is the invoking message in full: `.id`, `.text`, `.sent_at`,
+`.sender` (the person who wrote it, or `None` on a message that is only a reference) and
+`.reply_to`, the id of the message it quoted, or `None`. `ctx.reply()` quotes it, so an answer
+never floats free in a busy chat — there is no flag, and on an event that carries no message
+it sends a plain message instead.
 
 Handlers run concurrently, and an event is acked only after its handler returns — so a
 crash mid-handler redelivers rather than loses. **Do not block inside a handler.** A
@@ -116,10 +104,36 @@ An exception in a handler is logged with its traceback, the bot stays up, and th
 still acked:
 
 ```python
+from aurival import AnyContext, Event
+
 @bot.on_error
-async def on_error(error, ctx: Context | None):
+async def on_error(error: BaseException | Event, ctx: AnyContext | None) -> None:
     ...   # ctx is None for anything that did not come from a handler
 ```
+
+The hook also sees the two things that are not a handler's fault: a `problem` frame from the
+server (your socket stays open), and a `backlog.overflowed` event telling you how many events
+you missed while you were away and where delivery resumed. Neither reaches a command handler,
+which is why `error` is `BaseException | Event` and not just an exception.
+
+### Upgrading from 0.2.x
+
+`ctx.sender` is a `User` again on a command. Where 0.2.x made you write
+`if ctx.sender is not None:` before `ctx.sender.handle`, 0.3.0 wants `ctx.sender.handle` on
+its own — the narrowing existed only because one class covered every event, and that is what
+went away.
+
+`ctx.user`, `ctx.actor` and `ctx.emoji` are gone from `Context`. They live on the class for
+the event that carries them, so `ctx: Context` on a `member.joined` handler becomes
+`ctx: MemberContext`, and the `if ctx.user is not None:` guard it needed goes with it. An
+unannotated `ctx` keeps working unchanged — it registers and runs as it always did, you
+simply get nothing checked and nothing completed — see
+[Events beyond commands](#events-beyond-commands).
+
+`Context.from_event` no longer builds a context for anything but `command.invoked`, and
+`context_for` is internal. If you were calling `Context.from_event(event, http=...)` to make
+a context by hand, there is no supported replacement — the SDK builds the context, because
+picking the class for an event type is exactly the decision the release moved off you.
 
 ## Events beyond commands
 
@@ -129,96 +143,122 @@ being added or removed, a reaction landing on one of its messages — goes throu
 that type:
 
 ```python
+from aurival import BotContext, EventContext, MemberContext, ReactionContext
+
 @bot.on("member.joined")
-async def welcome(ctx: Context):
-    if ctx.user is not None:
-        await ctx.send(ctx.chat, f"welcome, {ctx.user.name}!")
+async def welcome(ctx: MemberContext) -> None:
+    await ctx.send(ctx.chat, f"welcome, {ctx.user.name}!")
 
 @bot.on("member.left")
-async def farewell(ctx: Context):
-    ...
+async def farewell(ctx: MemberContext) -> None:
+    await ctx.send(ctx.chat, f"{ctx.user.name} has left")
 
 @bot.on("bot.added")
-async def added(ctx: Context):
-    ...   # ctx.actor is who added it
+async def added(ctx: BotContext) -> None:
+    await ctx.reply(f"thanks for the invite, {ctx.actor.name}")
 
 @bot.on("bot.removed")
-async def removed(ctx: Context):
+async def removed(ctx: BotContext) -> None:
     ...
 
 @bot.on("reaction.added")
-async def liked(ctx: Context):
-    ...   # ctx.emoji, ctx.message, ctx.sender — no reaction.removed exists; un-reacting is silent
+async def liked(ctx: ReactionContext) -> None:
+    await ctx.react(ctx.message, ctx.emoji)   # no reaction.removed exists; un-reacting is silent
+
+@bot.on("some.future.type")
+async def future(ctx: EventContext) -> None:
+    if ctx.user is not None:
+        await ctx.reply(ctx.user.handle)
 
 
 def sync_registration(bot: Bot) -> None:
-    async def joined(ctx: Context) -> None:
+    async def joined(ctx: MemberContext) -> None:
         ...
 
     bot.on("member.joined", joined)  # the non-decorator form
 ```
 
-One `Context` for every event type — which attributes are populated depends on which event
-it is, and an attribute the current event doesn't carry is `None`, never a missing
-attribute:
+One class per event family, and each class declares only the fields its own event carries:
 
-| event | populated |
-|---|---|
-| `command.invoked` | `command`, `arguments`, `chat`, `sender`, `message` |
-| `member.joined` / `member.left` | `chat`, `user` |
-| `bot.added` / `bot.removed` | `chat`, `actor` |
-| `reaction.added` | `chat`, `sender`, `message` (id only), `emoji` |
+| event | context class | fields it adds |
+|---|---|---|
+| `command.invoked` | `Context` | `command`, `arguments`, `sender`, `message` |
+| `member.joined` / `member.left` | `MemberContext` | `user` |
+| `bot.added` / `bot.removed` | `BotContext` | `actor` |
+| `reaction.added` | `ReactionContext` | `sender`, `message` (id only), `emoji` |
+| anything else | `EventContext` | `sender`, `user`, `actor`, `message`, `emoji`, every one optional |
 
-An event type this SDK doesn't recognize yet still builds a `Context`, never an exception —
-a bot must keep running against a server that has shipped an eighth type — and populates it
-opportunistically from whatever the payload recognizably carries under the same keys above
-(`sender`, `user`, `actor`, `message`, `emoji`); "ignored, not fatal" means you get what's
-there, not nothing. `ctx.chat.member_count` is the chat's live participant count (bots
-included), an `int`, or `None` when the event's frame didn't carry one.
+`chat`, `event` and all six actions come from `BaseContext`, so they are on every context
+whatever the event. The split is there so your editor can tell you what `ctx` has: typing
+`bot.on("` offers the five names the SDK knows, a handler's `ctx` annotation is checked
+against the family you registered for — decorator or direct call — and autocomplete on
+`ctx.` lists what this event actually carries and nothing that would always be empty. You
+never read a doc to find out which fields are real on which event, and a handler annotated
+for the wrong family is a red line before you run it.
+
+Annotating is optional — a bare `ctx` registers and runs exactly as it always did, it is
+just `Any`, so nothing completes it and nothing catches a field the event never carries.
+`EventContext` is the forward-compatibility door: a type this SDK does not know yet still
+registers and still builds a context, never an exception, because a bot has to keep running
+against a server that has shipped an eighth type. It is populated opportunistically from
+whatever the payload recognizably carries under the familiar keys, which is why every field
+on it is optional — "ignored, not fatal" means you get what's there, not nothing.
+
+`ctx.chat.member_count` is the chat's live participant count, bots included: an `int` on
+every event the server sends today, and `None` only on a frame that omitted the key, because
+defaulting it to `0` would claim a count we were never given.
 
 ## Actions
 
-Six more things a handler can do, beyond `ctx.reply()`:
+Six more things a handler can do, beyond `ctx.reply()`. Every send returns the `Message` the
+server stored, so the thing you just posted is the thing you edit or delete next — you never
+have to fish an id back out:
 
 ```python
-async with ctx.typing():
-    ...   # sends is_typing:true on enter, is_typing:false on exit, even on exception
+@bot.command("work")
+async def work(ctx: Context) -> None:
+    sent = await ctx.reply("working…")
+    async with ctx.typing():
+        ...   # is_typing:true on enter, is_typing:false on exit, even on exception
+    await ctx.edit(sent, "done")
+    await ctx.react(ctx.message, "👍")
+    await ctx.unreact(ctx.message, "👍")
+    await ctx.delete(sent)
 
-await ctx.edit(ctx.message, "corrected text")
-await ctx.delete(ctx.message)
-await ctx.react(ctx.message, "👍")
-await ctx.unreact(ctx.message, "👍")
-
-page = await ctx.members()   # defaults to ctx.chat
-if page.has_more:            # never inferred from a short page or a cursor alone
-    more = await ctx.members(cursor=page.next_cursor)  # one page at a time — never auto-loads
+    page = await ctx.members()   # defaults to ctx.chat
+    while page.has_more:         # never inferred from a short page or a cursor alone
+        page = await ctx.members(cursor=page.next_cursor)   # one page at a time
 ```
 
-The typing indicator is also automatic (0.2.1): a command handler still running 300 ms after
-it started shows the chat "is thinking", and the indicator clears when the handler returns,
-including on an exception. A handler that replies inside those 300 ms sends nothing, so a fast
-bot never flickers. `Bot(auto_typing=False)` turns it off if you would rather drive
-`ctx.typing()` yourself.
+`edit` and `delete` take a `Message` or a bare id, and only the bot's own messages — anyone
+else's answers `MessageNotYours`. `react` and `unreact` work on any message in a chat the bot
+is in and are idempotent, so reacting twice leaves one reaction rather than toggling it off.
+The `sender` on a message you sent is id-only, with `handle` and `name` empty, because the
+stored entity carries a bare `usr_…` id and the SDK will not invent the rest.
+
+The typing indicator is also automatic: a command handler still running 300 ms after it
+started shows the chat "is thinking", and the indicator clears when the handler returns,
+including on an exception. A handler that replies inside those 300 ms sends nothing, so a
+fast bot never flickers. `Bot(auto_typing=False)` turns it off if you would rather drive
+`ctx.typing()` yourself, and `async with ctx.typing():` is also how you get the indicator up
+from the first instant, or outside a command.
 
 `ctx.send(chat, text, mentions=...)` posts to any chat, not only the one that triggered the
 handler, and mentions a user by writing `@` + their handle into `text` yourself — `mention()`
 builds that token for you:
 
 ```python
-from aurival import mention
+from aurival import MemberContext, mention
 
-target = ctx.user  # or any User you already have
-await ctx.send(ctx.chat, f"hey {mention(target)}, welcome!", mentions=[mention(target)])
+@bot.on("member.joined")
+async def greet(ctx: MemberContext) -> None:
+    who = mention(ctx.user)
+    await ctx.send(ctx.chat, f"hey {who}, welcome!", mentions=[who])
 ```
 
 `mentions` also takes a bare `User` or `{"user": "usr_…"}` directly — `mention()` exists for
 the token, not because the other forms are wrong. Every entry in `mentions` needs its
 `@handle` token actually present in `text`, or the server rejects the request.
-
-The hook also sees the two things that are not a handler's fault: a `problem`
-frame from the server (your socket stays open), and a `backlog.overflowed` event
-telling you how many events you missed while you were away and where delivery
-resumed. Neither reaches a command handler.
 
 ## Shadowed commands
 
@@ -255,9 +295,9 @@ except RateLimitError as exc:
 ```
 
 A `rate_limited` reply is retried for you, up to five attempts, as long as `retry_after` is
-15 seconds or less. Past that (0.2.1) the error is raised at once instead of slept through:
-a handler that sleeps for minutes holds its event unacknowledged for the whole wait, and the
-server redelivers behind it.
+15 seconds or less. Past that the error is raised at once instead of slept through: a handler
+that sleeps for minutes holds its event unacknowledged for the whole wait, and the server
+redelivers behind it.
 
 `KeyRevoked`, `SessionSuperseded` and `BotSuspended` end the process on purpose — each one
 means something a reconnect cannot fix. Everything else the SDK handles for you:

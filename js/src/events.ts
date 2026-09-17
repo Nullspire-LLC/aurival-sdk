@@ -1,9 +1,14 @@
 /**
- * Plain data a command handler receives (CONTRACT-V1 §3, §3.1).
+ * Plain data a handler receives (CONTRACT-V1 §3, §3.1).
  *
- * `Event` is the raw wire frame; `Context` is what `bot.ts` hands to a handler,
- * built from one. `Context` holds an `HttpClient` for `reply()` and nothing else
- * network-shaped — never the seed, a token, or the `Auth` object (SDK-33).
+ * `Event` is the raw wire frame; a context is what `bot.ts` hands to a
+ * handler, built from one. There is one context class per event family
+ * (BA-R68): `Context` for commands, `MemberContext`, `BotContext`,
+ * `ReactionContext`, and `EventContext` for a type this SDK does not name.
+ * Each carries only the fields its family delivers, so an editor can tell a
+ * developer what `ctx` holds without them opening the docs. Every context
+ * holds an `HttpClient` for its actions and nothing else network-shaped —
+ * never the seed, a token, or the `Auth` object (SDK-33).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -36,6 +41,14 @@ export interface Command {
   description: string;
 }
 
+/**
+ * A message. Events carry one under `invoking_message` (with `sent_at` and a
+ * full `sender`); the REST side returns the stored entity (with `created_at`
+ * and `sender` as a bare `usr_…` id) — `reply()`, `send()` and `edit()` all
+ * decode that into this same shape, so `sent.id` is what you hand back to
+ * `edit()`, `delete()` and `react()`. A `sender` known only by id has empty
+ * `handle` and `name`.
+ */
 export interface Message {
   id: string;
   text: string;
@@ -111,14 +124,44 @@ function chatFromWire(d: Record<string, unknown>): Chat {
 
 function messageFromWire(d: Record<string, unknown>): Message {
   const replyTo = d['reply_to'];
-  const sender = asRecord(d['sender']);
+  const rawSender = d['sender'];
+  const senderRecord = asRecord(rawSender);
+  let sender: User | null;
+  if (senderRecord) sender = userFromWire(senderRecord);
+  else if (typeof rawSender === 'string' && rawSender !== '')
+    sender = { id: rawSender, handle: '', name: '' };
+  else sender = null;
   return {
     id: asString(d['id']),
     text: asString(d['text']),
-    sent_at: asString(d['sent_at']),
-    sender: sender ? userFromWire(sender) : null,
+    sent_at: asString(d['sent_at'], asString(d['created_at'])),
+    sender,
     reply_to: typeof replyTo === 'string' ? replyTo : null,
   };
+}
+
+/** An id-only `Message` — what an event that names a message by `msg_…` alone becomes. */
+function messageFromRef(id: string): Message {
+  return { id, text: '', sent_at: '', sender: null, reply_to: null };
+}
+
+const EMPTY_MESSAGE: Message = messageFromRef('');
+const EMPTY_USER: User = { id: '', handle: '', name: '' };
+
+/** `data[key]` as a `User`, or an empty one when the frame omits it — never `null` for a field the contract pins as present. */
+function userField(data: Record<string, unknown>, key: string): User {
+  const record = asRecord(data[key]);
+  return record ? userFromWire(record) : EMPTY_USER;
+}
+
+function optionalUser(data: Record<string, unknown>, key: string): User | null {
+  const record = asRecord(data[key]);
+  return record ? userFromWire(record) : null;
+}
+
+function optionalMessageRef(data: Record<string, unknown>): Message | null {
+  const ref = data['message'];
+  return typeof ref === 'string' ? messageFromRef(ref) : null;
 }
 
 /**
@@ -202,191 +245,82 @@ function memberPageFromEnvelope(envelope: Record<string, unknown>): MemberPage {
   };
 }
 
-/**
- * Which `Context` fields a KNOWN generic event type actually carries
- * (CONTRACT-V1 §3.1). Any field not in a type's set is forced `null` when
- * building that type's `Context`, even if the wire payload happens to carry
- * a stray one — the payload shape for a known type is pinned by contract, so
- * JS must not surface what python's identical build does not (senior review,
- * merge gate). A type not in this map is unknown to this SDK and gets
- * opportunistic, unpinned population instead — see `fromGenericEvent`.
- */
-const KNOWN_GENERIC_EVENT_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
-  'member.joined': new Set(['user']),
-  'member.left': new Set(['user']),
-  'bot.added': new Set(['actor']),
-  'bot.removed': new Set(['actor']),
-  'reaction.added': new Set(['sender', 'message', 'emoji']),
-};
+// --------------------------------------------------------------------------
+// Event types and the handler context each one gets (BA-R68)
+// --------------------------------------------------------------------------
 
-export interface ContextInit {
-  command: string;
-  arguments: string;
+/** `member.joined` / `member.left` — group chats only, human members only. */
+export type MemberEventType = 'member.joined' | 'member.left';
+/** `bot.added` / `bot.removed` — this bot, in that chat, with who did it. */
+export type BotEventType = 'bot.added' | 'bot.removed';
+/** `reaction.added` — on one of this bot's own messages. There is no `reaction.removed`. */
+export type ReactionEventType = 'reaction.added';
+/** Every event type `bot.on()` names. `command.invoked` goes through `bot.command()`. */
+export type EventType = MemberEventType | BotEventType | ReactionEventType;
+
+interface BaseInit {
   chat: Chat;
-  sender: User | null;
-  /** Populated only for `member.joined` / `member.left`. */
-  user: User | null;
-  /** Populated only for `bot.added` / `bot.removed`. */
-  actor: User | null;
-  /** Populated only for `reaction.added`. */
-  emoji: string | null;
   event: Event;
-  message: Message | null;
   http: HttpClient;
 }
 
 /**
- * What a handler receives. Built by `bot.ts`'s dispatch closure from one
- * `Event` — `Socket` never constructs one. ONE class for every event type
- * (R6): `chat`/`sender`/`user`/`actor`/`message`/`emoji` are each populated
- * only for the event types that carry them —
- *
- *   - `command.invoked`: `chat`, `sender`, `message`
- *   - `member.joined` / `member.left`: `chat`, `user`
- *   - `bot.added` / `bot.removed`: `chat`, `actor`
- *   - `reaction.added`: `chat`, `sender`, `message`, `emoji`
- *
- * — everything else on a given `Context` is `null`. An unhandled or future
- * event type never throws building one: every field is read defensively off
- * `event.data` and falls back to `null`.
+ * What every context shares: the chat the event happened in, the raw event,
+ * and the actions. Subclasses add the fields their family delivers. The
+ * actions live here so `ctx.reply()` reads the same in every handler; a
+ * subclass that knows which message to quote says so through `quotes()`.
  */
-export class Context {
-  readonly command: string;
-  readonly arguments: string;
+export class BaseContext {
   readonly chat: Chat;
-  readonly sender: User | null;
-  readonly user: User | null;
-  readonly actor: User | null;
-  readonly emoji: string | null;
   readonly event: Event;
-  readonly message: Message | null;
   readonly #http: HttpClient;
 
-  constructor(init: ContextInit) {
-    this.command = init.command;
-    this.arguments = init.arguments;
+  constructor(init: BaseInit) {
     this.chat = init.chat;
-    this.sender = init.sender;
-    this.user = init.user;
-    this.actor = init.actor;
-    this.emoji = init.emoji;
     this.event = init.event;
-    this.message = init.message;
     this.#http = init.http;
   }
 
-  /** Build straight from a `command.invoked` event's raw `data`. */
-  static fromEvent(event: Event, http: HttpClient): Context {
-    const data = event.data;
-    const invokingMessage = asRecord(data['invoking_message']);
-    const message = data['message'];
-    let resolvedMessage: Message | null;
-    if (invokingMessage) {
-      // BA-R42: the invoking message travels with the event as a full object
-      // under `invoking_message`. Prefer that.
-      resolvedMessage = messageFromWire(invokingMessage);
-    } else if (typeof message === 'string') {
-      // `message` (the bare id string) is UNCHANGED wire compatibility — an
-      // old server that has not deployed BA-R42 yet sends only that string,
-      // so we fall back to an id-only Message rather than null, keeping a
-      // new SDK working against an old server.
-      resolvedMessage = { id: message, text: '', sent_at: '', sender: null, reply_to: null };
-    } else {
-      resolvedMessage = null;
-    }
-    return new Context({
-      command: asString(data['command']),
-      arguments: asString(data['arguments']),
-      chat: chatFromWire(asRecord(data['chat']) ?? {}),
-      sender: userFromWire(asRecord(data['sender']) ?? {}),
-      user: null,
-      actor: null,
-      emoji: null,
-      event,
-      message: resolvedMessage,
-      http,
-    });
+  /** The message id `reply()` quotes, or `null` to send the reply free-standing. */
+  protected quotes(): string | null {
+    return null;
   }
 
   /**
-   * Build from any non-`command.invoked` event `bot.on(type, fn)` registered
-   * for — `member.joined`/`member.left`, `bot.added`/`bot.removed`,
-   * `reaction.added`, or a type this SDK does not yet know the shape of.
-   *
-   * For a KNOWN type, the field set is pinned by CONTRACT-V1 §3.1: only the
-   * fields that type actually carries are read off `data`, and every other
-   * field is forced `null` even if the payload happens to carry a stray one
-   * (a `member.joined` frame with a stray `sender` must not populate
-   * `ctx.sender` — matches python). For a type this SDK does not recognize,
-   * every field is read defensively and opportunistically — there is no
-   * contract to pin it to, so whatever the frame happens to carry is
-   * surfaced rather than discarded. `chat` itself falls back to an empty one
-   * rather than throwing, for both cases.
-   */
-  static fromGenericEvent(event: Event, http: HttpClient): Context {
-    const data = event.data;
-    const chat = chatFromWire(asRecord(data['chat']) ?? {});
-    const known = KNOWN_GENERIC_EVENT_FIELDS[event.type];
-
-    if (known !== undefined) {
-      const sender = known.has('sender') ? asRecord(data['sender']) : null;
-      const user = known.has('user') ? asRecord(data['user']) : null;
-      const actor = known.has('actor') ? asRecord(data['actor']) : null;
-      const messageId = known.has('message') ? data['message'] : undefined;
-      const emoji = known.has('emoji') ? data['emoji'] : undefined;
-      return new Context({
-        command: '',
-        arguments: '',
-        chat,
-        sender: sender ? userFromWire(sender) : null,
-        user: user ? userFromWire(user) : null,
-        actor: actor ? userFromWire(actor) : null,
-        emoji: typeof emoji === 'string' ? emoji : null,
-        event,
-        message:
-          typeof messageId === 'string'
-            ? { id: messageId, text: '', sent_at: '', sender: null, reply_to: null }
-            : null,
-        http,
-      });
-    }
-
-    // Unknown type: opportunistic population, nothing pinned.
-    const sender = asRecord(data['sender']);
-    const user = asRecord(data['user']);
-    const actor = asRecord(data['actor']);
-    const messageId = data['message'];
-    const emoji = data['emoji'];
-    return new Context({
-      command: '',
-      arguments: '',
-      chat,
-      sender: sender ? userFromWire(sender) : null,
-      user: user ? userFromWire(user) : null,
-      actor: actor ? userFromWire(actor) : null,
-      emoji: typeof emoji === 'string' ? emoji : null,
-      event,
-      message:
-        typeof messageId === 'string'
-          ? { id: messageId, text: '', sent_at: '', sender: null, reply_to: null }
-          : null,
-      http,
-    });
-  }
-
-  /**
-   * `POST /v1/messages`, quoting the message that invoked the command
-   * (BA-R27, reversing SDK-30). One method, no flag. When the event carried no
-   * message id the field is omitted and the reply floats free.
+   * Send a message to this chat, quoting the message this event is about
+   * when there is one (BA-R27). Returns the stored message, so `sent.id` is
+   * ready for `edit()`, `delete()` and `react()`.
    *
    * A fresh `Idempotency-Key` per call, reused across that call's retries by
-   * `HttpClient.request` itself.
+   * `HttpClient.request` itself. When the event carried no message id the
+   * `reply_to` field is omitted and the reply floats free.
    */
-  async reply(text: string): Promise<Record<string, unknown>> {
-    return this.#http.sendMessage(this.chat.id, text, randomUUID(), this.message?.id ?? null);
+  async reply(text: string): Promise<Message> {
+    const sent = await this.#http.sendMessage(this.chat.id, text, randomUUID(), this.quotes());
+    return messageFromWire(sent);
   }
 
-  /** `POST /v1/chats/{chat}/typing` — `is_typing` only, no `state` spelling. */
+  /**
+   * Send a message to any chat this bot is in — this one or another.
+   * `mentions` names who `@handle` tokens in `text` point at: pass
+   * `mention(user)`, a `User`, or `{ user: 'usr_…' }`. Returns the stored
+   * message.
+   */
+  async send(
+    chat: Chat | string,
+    text: string,
+    options: { mentions?: MentionLike[] } = {},
+  ): Promise<Message> {
+    const mentions = options.mentions?.map(mentionEntry);
+    const sent = await this.#http.sendMessage(chatId(chat), text, randomUUID(), null, mentions);
+    return messageFromWire(sent);
+  }
+
+  /**
+   * Show or clear "is thinking…" in this chat. `POST /v1/chats/{chat}/typing`
+   * with `{"is_typing": bool}`. Command handlers get this automatically
+   * (auto-typing); reach for `withTyping()` when you want it yourself.
+   */
   async typing(isTyping: boolean): Promise<void> {
     const id = this.chat.id;
     if (id === '') {
@@ -395,7 +329,7 @@ export class Context {
     await this.#http.setTyping(id, isTyping);
   }
 
-  /** Sends `true` on entry, `false` on exit — ALWAYS, including on throw. */
+  /** Runs `fn` with the indicator on: `true` on entry, `false` on exit — ALWAYS, including on throw. */
   async withTyping<T>(fn: () => Promise<T>): Promise<T> {
     await this.typing(true);
     try {
@@ -405,31 +339,39 @@ export class Context {
     }
   }
 
-  async edit(message: Message | string, text: string): Promise<Record<string, unknown>> {
-    return this.#http.editMessage(messageId(message), text);
+  /**
+   * Change the text of one of this bot's own messages. Pass what `reply()`
+   * or `send()` returned, or its id. Someone else's message is
+   * `MessageNotYours`. Returns the updated message.
+   */
+  async edit(message: Message | string, text: string): Promise<Message> {
+    return messageFromWire(await this.#http.editMessage(messageId(message), text));
   }
 
+  /** Delete one of this bot's own messages. Someone else's is `MessageNotYours`. */
   async delete(message: Message | string): Promise<void> {
     await this.#http.deleteMessage(messageId(message));
   }
 
+  /**
+   * Put a reaction on a message, one emoji at a time. Reacting twice with the
+   * same emoji is a no-op; a string longer than one emoji is
+   * `ReactionEmojiTooLong`.
+   */
   async react(message: Message | string, emoji: string): Promise<void> {
     await this.#http.setReaction(messageId(message), emoji);
   }
 
+  /** Take a reaction off. Removing one that is not there is a no-op. */
   async unreact(message: Message | string, emoji: string): Promise<void> {
     await this.#http.unsetReaction(messageId(message), emoji);
   }
 
-  async send(
-    chat: Chat | string,
-    text: string,
-    options: { mentions?: MentionLike[] } = {},
-  ): Promise<Record<string, unknown>> {
-    const mentions = options.mentions?.map(mentionEntry);
-    return this.#http.sendMessage(chatId(chat), text, randomUUID(), null, mentions);
-  }
-
+  /**
+   * One page of who is in a chat, bots included — this chat by default.
+   * Check `hasMore` and pass `nextCursor` back as `cursor` for the next page;
+   * `ctx.chat.member_count` is the total without a call.
+   */
   async members(chat?: Chat | string, options: { cursor?: string } = {}): Promise<MemberPage> {
     const resolved = chat !== undefined ? chatId(chat) : this.chat.id;
     if (resolved === '') {
@@ -439,5 +381,236 @@ export class Context {
     }
     const envelope = await this.#http.listMembers(resolved, options.cursor);
     return memberPageFromEnvelope(envelope);
+  }
+}
+
+export interface ContextInit extends BaseInit {
+  command: string;
+  arguments: string;
+  sender: User;
+  message: Message;
+}
+
+/**
+ * What a `bot.command()` handler receives. Built by `bot.ts`'s dispatch
+ * closure from one `command.invoked` event — `Socket` never constructs one.
+ * `sender` and `message` are always set: the server never emits a command
+ * without both.
+ */
+export class Context extends BaseContext {
+  /** The command name as the server matched it, without the slash. */
+  readonly command: string;
+  /** Everything after the command name, untrimmed of its inner spaces. `''` when there was nothing. */
+  readonly arguments: string;
+  /** Who typed the command. */
+  readonly sender: User;
+  /** The message that carried the command. `reply()` quotes it. */
+  readonly message: Message;
+
+  constructor(init: ContextInit) {
+    super(init);
+    this.command = init.command;
+    this.arguments = init.arguments;
+    this.sender = init.sender;
+    this.message = init.message;
+  }
+
+  protected override quotes(): string | null {
+    return this.message.id === '' ? null : this.message.id;
+  }
+
+  /** Build straight from a `command.invoked` event's raw `data`. */
+  static fromEvent(event: Event, http: HttpClient): Context {
+    const data = event.data;
+    const invokingMessage = asRecord(data['invoking_message']);
+    const ref = data['message'];
+    let message: Message;
+    if (invokingMessage) {
+      // BA-R42: the invoking message travels with the event as a full object
+      // under `invoking_message`. Prefer that.
+      message = messageFromWire(invokingMessage);
+    } else if (typeof ref === 'string') {
+      // `message` (the bare id string) is UNCHANGED wire compatibility — an
+      // old server that has not deployed BA-R42 yet sends only that string,
+      // so we fall back to an id-only Message, keeping a new SDK working
+      // against an old server.
+      message = messageFromRef(ref);
+    } else {
+      message = EMPTY_MESSAGE;
+    }
+    return new Context({
+      command: asString(data['command']),
+      arguments: asString(data['arguments']),
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      sender: userField(data, 'sender'),
+      message,
+      event,
+      http,
+    });
+  }
+}
+
+export interface MemberContextInit extends BaseInit {
+  user: User;
+}
+
+/** `member.joined` / `member.left`: someone came into, or left, a group chat this bot is in. */
+export class MemberContext extends BaseContext {
+  /** Who joined or left. Never the bot itself — that is `bot.added` / `bot.removed`. */
+  readonly user: User;
+
+  constructor(init: MemberContextInit) {
+    super(init);
+    this.user = init.user;
+  }
+
+  static fromEvent(event: Event, http: HttpClient): MemberContext {
+    const data = event.data;
+    return new MemberContext({
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      user: userField(data, 'user'),
+      event,
+      http,
+    });
+  }
+}
+
+export interface BotContextInit extends BaseInit {
+  actor: User;
+}
+
+/** `bot.added` / `bot.removed`: this bot was put into, or taken out of, a chat. */
+export class BotContext extends BaseContext {
+  /** The person who added or removed the bot. */
+  readonly actor: User;
+
+  constructor(init: BotContextInit) {
+    super(init);
+    this.actor = init.actor;
+  }
+
+  static fromEvent(event: Event, http: HttpClient): BotContext {
+    const data = event.data;
+    return new BotContext({
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      actor: userField(data, 'actor'),
+      event,
+      http,
+    });
+  }
+}
+
+export interface ReactionContextInit extends BaseInit {
+  sender: User;
+  message: Message;
+  emoji: string;
+}
+
+/** `reaction.added`: someone reacted to one of this bot's own messages. */
+export class ReactionContext extends BaseContext {
+  /** Who reacted. */
+  readonly sender: User;
+  /** The bot's message they reacted to — id only; the text is not re-sent. `reply()` quotes it. */
+  readonly message: Message;
+  /** The emoji, as one string. */
+  readonly emoji: string;
+
+  constructor(init: ReactionContextInit) {
+    super(init);
+    this.sender = init.sender;
+    this.message = init.message;
+    this.emoji = init.emoji;
+  }
+
+  protected override quotes(): string | null {
+    return this.message.id === '' ? null : this.message.id;
+  }
+
+  static fromEvent(event: Event, http: HttpClient): ReactionContext {
+    const data = event.data;
+    return new ReactionContext({
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      sender: userField(data, 'sender'),
+      message: optionalMessageRef(data) ?? EMPTY_MESSAGE,
+      emoji: asString(data['emoji']),
+      event,
+      http,
+    });
+  }
+}
+
+export interface EventContextInit extends BaseInit {
+  sender: User | null;
+  user: User | null;
+  actor: User | null;
+  message: Message | null;
+  emoji: string | null;
+}
+
+/**
+ * An event type this SDK does not name yet. Nothing is pinned, so every
+ * field is read off the frame if it is there and `null` if it is not —
+ * whatever the wire carries is surfaced rather than discarded, and building
+ * one never throws.
+ */
+export class EventContext extends BaseContext {
+  readonly sender: User | null;
+  readonly user: User | null;
+  readonly actor: User | null;
+  readonly message: Message | null;
+  readonly emoji: string | null;
+
+  constructor(init: EventContextInit) {
+    super(init);
+    this.sender = init.sender;
+    this.user = init.user;
+    this.actor = init.actor;
+    this.message = init.message;
+    this.emoji = init.emoji;
+  }
+
+  protected override quotes(): string | null {
+    return this.message === null || this.message.id === '' ? null : this.message.id;
+  }
+
+  static fromEvent(event: Event, http: HttpClient): EventContext {
+    const data = event.data;
+    const emoji = data['emoji'];
+    return new EventContext({
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      sender: optionalUser(data, 'sender'),
+      user: optionalUser(data, 'user'),
+      actor: optionalUser(data, 'actor'),
+      message: optionalMessageRef(data),
+      emoji: typeof emoji === 'string' ? emoji : null,
+      event,
+      http,
+    });
+  }
+}
+
+/** Any context a handler can receive. What `bot.onError()` sees beside the error. */
+export type AnyContext = Context | MemberContext | BotContext | ReactionContext | EventContext;
+
+/**
+ * The context class for an event, by its type. `command.invoked` gets
+ * `Context`; the three named families get theirs; anything else gets
+ * `EventContext`. The dispatch side of BA-R68 — `bot.ts` calls this and
+ * hands the result to every handler registered for the type.
+ */
+export function contextFor(event: Event, http: HttpClient): AnyContext {
+  switch (event.type) {
+    case 'command.invoked':
+      return Context.fromEvent(event, http);
+    case 'member.joined':
+    case 'member.left':
+      return MemberContext.fromEvent(event, http);
+    case 'bot.added':
+    case 'bot.removed':
+      return BotContext.fromEvent(event, http);
+    case 'reaction.added':
+      return ReactionContext.fromEvent(event, http);
+    default:
+      return EventContext.fromEvent(event, http);
   }
 }

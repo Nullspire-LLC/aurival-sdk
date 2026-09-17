@@ -20,9 +20,28 @@ import * as aurival from '../src/index.js';
 // User/Chat/Command/MemberPage are frozen dataclasses with no methods; the JS
 // mirror of a pure record is an interface, which has no runtime binding.
 // `MentionLike` is JS-only (see file header) and has no Python counterpart at all.
-import type { Chat, Command, MemberPage, MentionLike, User } from '../src/index.js';
+import type {
+  AnyContext,
+  Chat,
+  Command,
+  EventType,
+  MemberPage,
+  MentionLike,
+  User,
+} from '../src/index.js';
+import { readFileSync } from 'node:fs';
 
-const TYPE_ONLY = ['Chat', 'Command', 'MemberPage', 'MentionLike', 'User'] as const;
+// `AnyContext` and `EventType` are type-only in both languages: Python spells
+// them as a `Union` and a `Literal`, which have no runtime class either.
+const TYPE_ONLY = [
+  'AnyContext',
+  'Chat',
+  'Command',
+  'EventType',
+  'MemberPage',
+  'MentionLike',
+  'User',
+] as const;
 
 /** Exactly Python's `__all__`, with its three casing changes applied. */
 const EXPECTED = [
@@ -33,13 +52,16 @@ const EXPECTED = [
   'AssertionExpired',
   'AssertionReplay',
   'AurivalAPIError',
+  'AnyContext',
   'AurivalError',
   'AuthenticationError',
   'BYE_ACTIONS',
   'BadAssertion',
   'BadProof',
   'BadPublicKey',
+  'BaseContext',
   'Bot',
+  'BotContext',
   'BotLinkNotAllowed',
   'BotPlaygroundOnly',
   'BotSuspended',
@@ -51,6 +73,8 @@ const EXPECTED = [
   'DOC_URL_PREFIX',
   'EmptyText',
   'Event',
+  'EventContext',
+  'EventType',
   'FrameInvalid',
   'FrameTooLarge',
   'IdempotencyKeyInvalid',
@@ -62,6 +86,7 @@ const EXPECTED = [
   'InvalidRequestError',
   'KeyAlreadyPaired',
   'KeyRevoked',
+  'MemberContext',
   'MemberPage',
   'Mention',
   'MentionLike',
@@ -76,6 +101,7 @@ const EXPECTED = [
   'ProtocolError',
   'RateLimitError',
   'RateLimited',
+  'ReactionContext',
   'ReactionEmojiTooLong',
   'ServerRestarting',
   'SessionSuperseded',
@@ -94,12 +120,14 @@ const EXPECTED = [
 ];
 
 describe('the public surface', () => {
-  // Python's `__all__` has 65 names (61 pre-existing + the 4 new error classes);
-  // 64 of them are mirrored here. `Message` is the one it does not mirror — it
-  // is a type-only export in `index.ts` and predates this list, so the count
-  // below is 64 mirrored names plus the JS-only `MentionLike`.
-  it('is exactly the 64 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(65);
+  // Python's `__all__` has 72 names (65 at AMENDMENT-04, plus the 7 BA-R68
+  // context names: AnyContext, BaseContext, BotContext, EventContext,
+  // EventType, MemberContext, ReactionContext); 71 of them are mirrored here.
+  // `Message` is the one it does not mirror — it is a type-only export in
+  // `index.ts` and predates this list, so the count below is 71 mirrored
+  // names plus the JS-only `MentionLike`.
+  it('is exactly the 71 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(72);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -167,7 +195,15 @@ describe('the public surface', () => {
     expect(m).toBeInstanceOf(aurival.Mention);
   });
 
-  it('reports a version', () => {
-    expect(aurival.version).toBe('0.2.0');
+  it('reports the version package.json ships as', () => {
+    // 0.2.1 shipped saying '0.2.0' because this test pinned a literal instead
+    // of the manifest. The manifest is what npm publishes; `version` follows it.
+    const manifest = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as {
+      version: string;
+    };
+    expect(aurival.version).toBe(manifest.version);
+    expect(aurival.version).toBe('0.3.0');
   });
 });

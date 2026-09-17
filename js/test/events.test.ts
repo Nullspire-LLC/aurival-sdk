@@ -1,7 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Context, Event, Mention, mention } from '../src/events.js';
+import {
+  BotContext,
+  Context,
+  Event,
+  EventContext,
+  MemberContext,
+  Mention,
+  ReactionContext,
+  contextFor,
+  mention,
+} from '../src/events.js';
 import * as errors from '../src/errors.js';
 import { HttpClient } from '../src/http.js';
 import type { Auth } from '../src/auth.js';
@@ -180,7 +190,7 @@ describe('Context.fromEvent', () => {
     expect(ctx.message?.reply_to).toBeNull();
   });
 
-  it('message is null when absent', () => {
+  it('message is an empty Message, never null, when absent (BA-R68: a command always has one)', () => {
     const event = makeInvokedEvent({
       command: 'ping',
       arguments: '',
@@ -188,10 +198,10 @@ describe('Context.fromEvent', () => {
       sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
     });
     const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
-    expect(ctx.message).toBeNull();
+    expect(ctx.message.id).toBe('');
   });
 
-  it('message is null when not a string', () => {
+  it('message is an empty Message when not a string', () => {
     const event = makeInvokedEvent({
       command: 'ping',
       arguments: '',
@@ -200,7 +210,7 @@ describe('Context.fromEvent', () => {
       message: 12345,
     });
     const ctx = Context.fromEvent(event, new HttpClient('http://example.invalid'));
-    expect(ctx.message).toBeNull();
+    expect(ctx.message.id).toBe('');
   });
 });
 
@@ -267,7 +277,16 @@ describe('Context.reply', () => {
   it('quotes the invoking message: {chat, text, reply_to} plus an Idempotency-Key (BA-R27)', async () => {
     const { url, server, requests } = await startServer((_req, res) => {
       res.writeHead(201, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(
+        JSON.stringify({
+          object: 'message',
+          id: 'msg_sent',
+          chat: 'chat_1',
+          sender: 'usr_bot',
+          text: 'hello there',
+          created_at: '2026-09-16T00:00:00Z',
+        }),
+      );
     });
     openServers.push(server);
 
@@ -282,7 +301,16 @@ describe('Context.reply', () => {
     const ctx = Context.fromEvent(event, http);
 
     const result = await ctx.reply('hello there');
-    expect(result).toEqual({ ok: true });
+    // The stored entity (created_at, sender as a bare id) decodes into the
+    // same `Message` shape events carry, so `result.id` goes straight back
+    // into edit()/delete()/react() (BA-R68).
+    expect(result).toEqual({
+      id: 'msg_sent',
+      text: 'hello there',
+      sent_at: '2026-09-16T00:00:00Z',
+      sender: { id: 'usr_bot', handle: '', name: '' },
+      reply_to: null,
+    });
     expect(requests).toHaveLength(1);
     const req = requests[0];
     if (req === undefined) throw new Error('expected one captured request');
@@ -425,7 +453,7 @@ describe('Context does not expose its HttpClient', () => {
 });
 
 // --------------------------------------------------------------------------
-// AMENDMENT-04: chat.member_count, Context.fromGenericEvent, Mention, actions
+// AMENDMENT-04: chat.member_count, contextFor, Mention, actions
 // --------------------------------------------------------------------------
 
 function makeGenericEvent(type: string, data: Record<string, unknown>): Event {
@@ -463,44 +491,62 @@ describe('Chat.member_count', () => {
   });
 });
 
-describe('Context.fromGenericEvent', () => {
+describe('contextFor: one context class per event family (BA-R68)', () => {
   const http = new HttpClient('http://example.invalid');
 
-  it('member.joined populates chat and user, leaves sender/actor/emoji/message null', () => {
+  it('member.joined builds a MemberContext with chat and user, and no sender/actor/emoji fields at all', () => {
     const event = makeGenericEvent('member.joined', {
-      chat: { id: 'chat_1', type: 'group', name: 'Crew', member_count: 5 },
+      chat: { id: 'chat_1', type: 'group', name: null, member_count: 4 },
       user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
     });
-    const ctx = Context.fromGenericEvent(event, http);
-    expect(ctx.chat).toEqual({ id: 'chat_1', type: 'group', name: 'Crew', member_count: 5 });
+    const ctx = contextFor(event, http);
+    expect(ctx).toBeInstanceOf(MemberContext);
+    if (!(ctx instanceof MemberContext)) throw new Error('unreachable');
     expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
-    expect(ctx.sender).toBeNull();
-    expect(ctx.actor).toBeNull();
-    expect(ctx.emoji).toBeNull();
-    expect(ctx.message).toBeNull();
+    expect(ctx.chat.member_count).toBe(4);
+    // The class carries only what the family delivers, so autocomplete never
+    // offers a field that is always empty.
+    expect('sender' in ctx).toBe(false);
+    expect('actor' in ctx).toBe(false);
+    expect('emoji' in ctx).toBe(false);
+    expect('message' in ctx).toBe(false);
   });
 
-  it('bot.added populates chat and actor', () => {
-    const event = makeGenericEvent('bot.added', {
+  it('member.left builds a MemberContext too', () => {
+    const event = makeGenericEvent('member.left', {
       chat: { id: 'chat_1', type: 'group', name: null },
-      actor: { id: 'user_2', handle: 'op', name: 'Op' },
+      user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
     });
-    const ctx = Context.fromGenericEvent(event, http);
-    expect(ctx.actor).toEqual({ id: 'user_2', handle: 'op', name: 'Op' });
-    expect(ctx.user).toBeNull();
+    expect(contextFor(event, http)).toBeInstanceOf(MemberContext);
   });
 
-  it('reaction.added populates chat, sender, message (id-only) and emoji', () => {
+  it('bot.added / bot.removed build a BotContext with chat and actor', () => {
+    for (const type of ['bot.added', 'bot.removed']) {
+      const event = makeGenericEvent(type, {
+        chat: { id: 'chat_1', type: 'group', name: null },
+        actor: { id: 'user_2', handle: 'op', name: 'Op' },
+      });
+      const ctx = contextFor(event, http);
+      expect(ctx).toBeInstanceOf(BotContext);
+      if (!(ctx instanceof BotContext)) throw new Error('unreachable');
+      expect(ctx.actor).toEqual({ id: 'user_2', handle: 'op', name: 'Op' });
+      expect('user' in ctx).toBe(false);
+    }
+  });
+
+  it('reaction.added builds a ReactionContext with chat, sender, message (id-only) and emoji', () => {
     const event = makeGenericEvent('reaction.added', {
-      chat: { id: 'chat_1', type: 'dm', name: null },
-      message: 'msg_5',
+      chat: { id: 'chat_1', type: 'group', name: null },
+      message: 'msg_77',
       emoji: '\u{1F44D}',
       sender: { id: 'user_3', handle: 'reactor', name: 'Reactor' },
     });
-    const ctx = Context.fromGenericEvent(event, http);
+    const ctx = contextFor(event, http);
+    expect(ctx).toBeInstanceOf(ReactionContext);
+    if (!(ctx instanceof ReactionContext)) throw new Error('unreachable');
     expect(ctx.emoji).toBe('\u{1F44D}');
     expect(ctx.message).toEqual({
-      id: 'msg_5',
+      id: 'msg_77',
       text: '',
       sent_at: '',
       sender: null,
@@ -509,19 +555,33 @@ describe('Context.fromGenericEvent', () => {
     expect(ctx.sender).toEqual({ id: 'user_3', handle: 'reactor', name: 'Reactor' });
   });
 
-  it('an unknown/future event type never throws and leaves everything but chat null', () => {
-    const event = makeGenericEvent('something.new.from.the.future', {});
-    expect(() => Context.fromGenericEvent(event, http)).not.toThrow();
-    const ctx = Context.fromGenericEvent(event, http);
-    expect(ctx.chat).toEqual({ id: '', type: '', name: null, member_count: null });
-    expect(ctx.sender).toBeNull();
-    expect(ctx.user).toBeNull();
-    expect(ctx.actor).toBeNull();
-    expect(ctx.emoji).toBeNull();
-    expect(ctx.message).toBeNull();
+  it('command.invoked builds the command Context', () => {
+    const event = makeInvokedEvent({
+      command: 'ping',
+      arguments: '',
+      chat: { id: 'chat_1', type: 'dm', name: null },
+      sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
+      message: 'msg_1',
+    });
+    const ctx = contextFor(event, http);
+    expect(ctx).toBeInstanceOf(Context);
+    if (!(ctx instanceof Context)) throw new Error('unreachable');
+    expect(ctx.sender.handle).toBe('gustav');
+    expect(ctx.message.id).toBe('msg_1');
   });
 
-  it('a KNOWN type nulls out a stray field the contract says it does not carry (CONTRACT-V1 §3.1, matches python)', () => {
+  it('a known family pins its fields as present: a short frame yields empty entities, never null', () => {
+    const member = contextFor(makeGenericEvent('member.joined', { chat: { id: 'chat_1' } }), http);
+    if (!(member instanceof MemberContext)) throw new Error('expected MemberContext');
+    expect(member.user).toEqual({ id: '', handle: '', name: '' });
+    const reaction = contextFor(makeGenericEvent('reaction.added', {}), http);
+    if (!(reaction instanceof ReactionContext)) throw new Error('expected ReactionContext');
+    expect(reaction.message.id).toBe('');
+    expect(reaction.emoji).toBe('');
+    expect(reaction.chat.id).toBe('');
+  });
+
+  it('a known family ignores a stray field the contract says it does not carry (CONTRACT-V1 §3.1, matches python)', () => {
     const event = makeGenericEvent('member.joined', {
       chat: { id: 'chat_1', type: 'group', name: null },
       user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
@@ -531,15 +591,26 @@ describe('Context.fromGenericEvent', () => {
       emoji: '\u{1F44D}',
       message: 'msg_1',
     });
-    const ctx = Context.fromGenericEvent(event, http);
-    expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
+    const ctx = contextFor(event, http);
+    expect(ctx).toBeInstanceOf(MemberContext);
+    expect(Object.keys(ctx).sort()).toEqual(['chat', 'event', 'user']);
+  });
+
+  it('an unknown/future event type never throws and builds an EventContext with everything but chat null', () => {
+    const event = makeGenericEvent('something.new.from.the.future', { a: 1 });
+    expect(() => contextFor(event, http)).not.toThrow();
+    const ctx = contextFor(event, http);
+    expect(ctx).toBeInstanceOf(EventContext);
+    if (!(ctx instanceof EventContext)) throw new Error('unreachable');
+    expect(ctx.chat.id).toBe('');
     expect(ctx.sender).toBeNull();
+    expect(ctx.user).toBeNull();
     expect(ctx.actor).toBeNull();
     expect(ctx.emoji).toBeNull();
     expect(ctx.message).toBeNull();
   });
 
-  it('an UNKNOWN type still populates opportunistically — the stray-field guard is per-known-type only', () => {
+  it('an unknown type populates opportunistically — nothing is pinned, so whatever the frame carries is surfaced', () => {
     const event = makeGenericEvent('something.new.from.the.future', {
       chat: { id: 'chat_1', type: 'group', name: null },
       sender: { id: 'user_1', handle: 'gustav', name: 'Gustav' },
@@ -548,12 +619,42 @@ describe('Context.fromGenericEvent', () => {
       emoji: '\u{1F44D}',
       message: 'msg_1',
     });
-    const ctx = Context.fromGenericEvent(event, http);
+    const ctx = contextFor(event, http);
+    if (!(ctx instanceof EventContext)) throw new Error('expected EventContext');
     expect(ctx.sender).toEqual({ id: 'user_1', handle: 'gustav', name: 'Gustav' });
     expect(ctx.actor).toEqual({ id: 'user_2', handle: 'op', name: 'Op' });
     expect(ctx.user).toEqual({ id: 'user_9', handle: 'newbie', name: 'Newbie' });
     expect(ctx.emoji).toBe('\u{1F44D}');
     expect(ctx.message?.id).toBe('msg_1');
+  });
+
+  it('reply() from a ReactionContext quotes the reacted-to message; from a MemberContext it floats free', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'message', id: 'msg_new', text: 'x' }));
+    });
+    openServers.push(server);
+    const live = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const reaction = contextFor(
+      makeGenericEvent('reaction.added', {
+        chat: { id: 'chat_1', type: 'group', name: null },
+        message: 'msg_77',
+        emoji: '\u{1F44D}',
+        sender: { id: 'user_3', handle: 'reactor', name: 'Reactor' },
+      }),
+      live,
+    );
+    await reaction.reply('thanks');
+    const member = contextFor(
+      makeGenericEvent('member.joined', {
+        chat: { id: 'chat_1', type: 'group', name: null },
+        user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
+      }),
+      live,
+    );
+    await member.reply('welcome');
+    expect(requests[0]?.body).toEqual({ chat: 'chat_1', text: 'thanks', reply_to: 'msg_77' });
+    expect(requests[1]?.body).toEqual({ chat: 'chat_1', text: 'welcome' });
   });
 });
 
@@ -581,12 +682,12 @@ describe('Mention', () => {
 });
 
 describe('Context actions', () => {
-  function buildGenericCtx(http: HttpClient): Context {
+  function buildGenericCtx(http: HttpClient): MemberContext {
     const event = makeGenericEvent('member.joined', {
       chat: { id: 'chat_1', type: 'group', name: null },
       user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
     });
-    return Context.fromGenericEvent(event, http);
+    return MemberContext.fromEvent(event, http);
   }
 
   it('typing(true) POSTs .../typing with {is_typing: true}, never "state"', async () => {
@@ -631,7 +732,8 @@ describe('Context actions', () => {
     const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
     const ctx = buildGenericCtx(http);
     const result = await ctx.edit('msg_1', 'updated');
-    expect(result).toEqual({ object: 'message', id: 'msg_1', text: 'updated' });
+    expect(result.id).toBe('msg_1');
+    expect(result.text).toBe('updated');
     expect(requests[0]?.method).toBe('PATCH');
     expect(requests[0]?.url).toBe('/v1/messages/msg_1');
     expect(requests[0]?.body).toEqual({ text: 'updated' });
@@ -806,7 +908,7 @@ describe('Context actions', () => {
     const event = makeGenericEvent('member.joined', {
       user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
     });
-    const ctx = Context.fromGenericEvent(event, http);
+    const ctx = MemberContext.fromEvent(event, http);
     await expect(ctx.typing(true)).rejects.toBeInstanceOf(errors.AurivalError);
   });
 
@@ -815,7 +917,7 @@ describe('Context actions', () => {
     const event = makeGenericEvent('member.joined', {
       user: { id: 'user_9', handle: 'newbie', name: 'Newbie' },
     });
-    const ctx = Context.fromGenericEvent(event, http);
+    const ctx = MemberContext.fromEvent(event, http);
     await expect(ctx.members()).rejects.toBeInstanceOf(errors.AurivalError);
   });
 });

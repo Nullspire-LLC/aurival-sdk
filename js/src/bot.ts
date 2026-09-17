@@ -3,9 +3,19 @@
 import { Auth, KeyFile, machineLabel, pair, resolveHost } from './auth.js';
 import type { Machine, MachineKey } from './auth.js';
 import { AurivalError, BotSuspended, RateLimitError, SessionSuperseded } from './errors.js';
-import { Context, Event } from './events.js';
+import { Context, Event, contextFor } from './events.js';
 import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
-import type { Command } from './events.js';
+import type {
+  AnyContext,
+  BotContext,
+  BotEventType,
+  Command,
+  EventContext,
+  MemberContext,
+  MemberEventType,
+  ReactionContext,
+  ReactionEventType,
+} from './events.js';
 import type { Logger } from './http.js';
 import { EVENT_BACKLOG_OVERFLOWED, EVENT_COMMAND_INVOKED, Socket } from './socket.js';
 import * as status from './status.js';
@@ -23,14 +33,24 @@ const NEVER_DISPATCHED_TO_ON: ReadonlyMap<string, string> = new Map([
   [EVENT_BACKLOG_OVERFLOWED, 'operational only — never reaches a handler (SDK-28)'],
 ]);
 
+/** A `bot.command()` handler. */
 export type Handler = (ctx: Context) => Promise<void> | void;
+/** A `member.joined` / `member.left` handler. */
+export type MemberHandler = (ctx: MemberContext) => Promise<void> | void;
+/** A `bot.added` / `bot.removed` handler. */
+export type BotHandler = (ctx: BotContext) => Promise<void> | void;
+/** A `reaction.added` handler. */
+export type ReactionHandler = (ctx: ReactionContext) => Promise<void> | void;
+/** A handler for an event type this SDK does not name — every field optional. */
+export type EventHandler = (ctx: EventContext) => Promise<void> | void;
+type AnyHandler = (ctx: never) => Promise<void> | void;
 
 /**
  * The hook also receives a `backlog.overflowed` Event, which is operational
  * rather than an error — it never reaches a handler (SDK-28).
  */
 export type Reportable = unknown | Event;
-export type ErrorHook = (error: Reportable, ctx: Context | null) => Promise<void> | void;
+export type ErrorHook = (error: Reportable, ctx: AnyContext | null) => Promise<void> | void;
 
 /** How long a clean shutdown waits for handlers that are still running (SDK-32). */
 export const SHUTDOWN_GRACE_MS = 10_000;
@@ -164,7 +184,7 @@ export class Bot {
    * caught in review; js used to be one-handler-per-type and silently
    * replace, python already ran all of them).
    */
-  readonly #onHandlers = new Map<string, Handler[]>();
+  readonly #onHandlers = new Map<string, AnyHandler[]>();
   readonly #inflight = new Set<Promise<void>>();
   readonly #log: Logger;
   readonly #host: string | undefined;
@@ -200,12 +220,17 @@ export class Bot {
   }
 
   /**
-   * Register a handler for any event type other than `command.invoked` (use
-   * `command()` for that) — `member.joined`, `member.left`, `bot.added`,
-   * `bot.removed`, `reaction.added`, or a future type this SDK does not yet
-   * name. Many handlers may share one type; each runs in the order it was
-   * registered (matches python), and the event is acked once, after every
-   * handler for it has settled.
+   * Register a handler for an event. Which context the handler gets follows
+   * from the type, and your editor knows it (BA-R68):
+   *
+   *   - `member.joined` / `member.left` → `MemberContext` (`ctx.user`)
+   *   - `bot.added` / `bot.removed` → `BotContext` (`ctx.actor`)
+   *   - `reaction.added` → `ReactionContext` (`ctx.sender`, `ctx.message`, `ctx.emoji`)
+   *   - any other string → `EventContext` (everything optional)
+   *
+   * `command.invoked` goes through `command()`. Many handlers may share one
+   * type; each runs in the order it was registered (matches python), and
+   * the event is acked once, after every handler for it has settled.
    *
    * Throws immediately, before any registration, for the two types that are
    * STRUCTURALLY undispatchable through `on()`: `command.invoked` (never
@@ -218,7 +243,13 @@ export class Bot {
    * because the wire hasn't sent it yet would be a forward-compatibility
    * trap — the handler just never fires until/unless that changes.
    */
-  on(type: string, handler: Handler): void {
+  on(type: MemberEventType, handler: MemberHandler): void;
+  on(type: BotEventType, handler: BotHandler): void;
+  on(type: ReactionEventType, handler: ReactionHandler): void;
+  // `string & {}` keeps the literals above in autocomplete while still
+  // accepting a type this SDK has not named yet.
+  on(type: string & {}, handler: EventHandler): void;
+  on(type: string, handler: AnyHandler): void {
     const reason = NEVER_DISPATCHED_TO_ON.get(type);
     if (reason !== undefined) {
       throw new AurivalError(`bot.on(${JSON.stringify(type)}, ...) can never run: ${reason}`);
@@ -445,7 +476,9 @@ export class Bot {
       sent = ctx.typing(true).then(
         () => true,
         (exc: unknown) => {
-          this.#log.debug(`auto typing start failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+          this.#log.debug(
+            `auto typing start failed: ${exc instanceof Error ? exc.message : String(exc)}`,
+          );
           return false;
         },
       );
@@ -456,7 +489,9 @@ export class Bot {
         if (sent === null) return;
         if (!(await sent)) return;
         await ctx.typing(false).catch((exc: unknown) => {
-          this.#log.debug(`auto typing stop failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+          this.#log.debug(
+            `auto typing stop failed: ${exc instanceof Error ? exc.message : String(exc)}`,
+          );
         });
       },
     };
@@ -481,10 +516,10 @@ export class Bot {
       return;
     }
     if (this.#http === null) return;
-    const ctx = Context.fromGenericEvent(event, this.#http);
+    const ctx = contextFor(event, this.#http);
     for (const handler of handlers) {
       try {
-        await handler(ctx);
+        await handler(ctx as never);
       } catch (exc) {
         // One bad handler must not take the bot offline (SDK-16), same as a
         // command, and must not stop the other handlers for this event.
@@ -496,7 +531,7 @@ export class Bot {
     }
   }
 
-  async #callErrorHook(error: Reportable, ctx: Context | null): Promise<void> {
+  async #callErrorHook(error: Reportable, ctx: AnyContext | null): Promise<void> {
     if (this.#errorHook === null) return;
     try {
       await this.#errorHook(error, ctx);

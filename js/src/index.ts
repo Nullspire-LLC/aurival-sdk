@@ -74,8 +74,28 @@ export {
   UnknownParameter,
   fromEnvelope,
 } from './errors.js';
-export { Context, Event, Mention, mention } from './events.js';
-export type { Chat, Command, MemberPage, Message, MentionLike, User } from './events.js';
+export {
+  BaseContext,
+  BotContext,
+  Context,
+  Event,
+  EventContext,
+  MemberContext,
+  Mention,
+  ReactionContext,
+  mention,
+} from './events.js';
+export type {
+  AnyContext,
+  Chat,
+  Command,
+  EventType,
+  MemberPage,
+  Message,
+  MentionLike,
+  User,
+} from './events.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 
-export const version = '0.2.0';
+/** The package version. Pinned to `package.json` by test/index.test.ts. */
+export const version = '0.3.0';
