@@ -378,6 +378,8 @@ text at body size rather than as larger type, because a card is not a document. 
 images, tables, code panels and autolink — a fenced block renders as plain styled text, not a
 panel, and a bare URL never becomes a tap target.
 
+Italic is `*text*`; underscores are not a delimiter and render as typed.
+
 The 1024-character description cap counts the raw markdown source you typed, not what the reader
 sees, so the asterisks and backticks are part of your budget.
 
