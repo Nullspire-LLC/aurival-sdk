@@ -310,6 +310,9 @@ describe('Context.reply', () => {
       sent_at: '2026-09-16T00:00:00Z',
       sender: { id: 'usr_bot', handle: '', name: '' },
       reply_to: null,
+      embeds: [],
+      buttons: [],
+      button_used: null,
     });
     expect(requests).toHaveLength(1);
     const req = requests[0];
@@ -551,6 +554,9 @@ describe('contextFor: one context class per event family (BA-R68)', () => {
       sent_at: '',
       sender: null,
       reply_to: null,
+      embeds: [],
+      buttons: [],
+      button_used: null,
     });
     expect(ctx.sender).toEqual({ id: 'user_3', handle: 'reactor', name: 'Reactor' });
   });
@@ -872,6 +878,9 @@ describe('Context actions', () => {
       sent_at: '',
       sender: null,
       reply_to: null,
+      embeds: [],
+      buttons: [],
+      button_used: null,
     };
     await ctx.delete(message);
     await ctx.react(message, '\u{1F44D}');

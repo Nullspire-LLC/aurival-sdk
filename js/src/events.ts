@@ -12,7 +12,16 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { EMPTY_MESSAGE as NOTHING_TO_SAY } from './caps.js';
 import { AurivalError } from './errors.js';
+import {
+  buttonUsedFromWire,
+  buttonsFromWire,
+  embedsFromWire,
+  serialiseButtons,
+  serialiseEmbeds,
+} from './embeds.js';
+import type { Button, ButtonLike, ButtonUsed, Embed, EmbedLike } from './embeds.js';
 import type { HttpClient } from './http.js';
 
 export interface User {
@@ -55,6 +64,12 @@ export interface Message {
   sent_at: string;
   sender: User | null;
   reply_to: string | null;
+  /** `[]` when the wire omits the key or sends `null` (AMENDMENT-05 §3) — never `null`/`undefined`. */
+  embeds: Embed[];
+  /** `[]` when the wire omits the key or sends `null` — never `null`/`undefined`. */
+  buttons: Button[];
+  /** `null` when the wire omits the key, sends `null`, or the message never carried a button. */
+  button_used: ButtonUsed | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -137,12 +152,24 @@ function messageFromWire(d: Record<string, unknown>): Message {
     sent_at: asString(d['sent_at'], asString(d['created_at'])),
     sender,
     reply_to: typeof replyTo === 'string' ? replyTo : null,
+    embeds: embedsFromWire(d['embeds']),
+    buttons: buttonsFromWire(d['buttons']),
+    button_used: buttonUsedFromWire(d['button_used']),
   };
 }
 
 /** An id-only `Message` — what an event that names a message by `msg_…` alone becomes. */
 function messageFromRef(id: string): Message {
-  return { id, text: '', sent_at: '', sender: null, reply_to: null };
+  return {
+    id,
+    text: '',
+    sent_at: '',
+    sender: null,
+    reply_to: null,
+    embeds: [],
+    buttons: [],
+    button_used: null,
+  };
 }
 
 const EMPTY_MESSAGE: Message = messageFromRef('');
@@ -194,6 +221,45 @@ function mentionEntry(m: MentionLike): { user: string } {
   if (m instanceof Mention) return m.entry;
   if (typeof (m as { id?: unknown }).id === 'string') return { user: (m as User).id };
   return { user: (m as { user: string }).user };
+}
+
+/** What `reply()` takes besides the text: the card to hang on the message. */
+export interface ReplyOptions {
+  embeds?: ReadonlyArray<EmbedLike>;
+  buttons?: ReadonlyArray<ButtonLike>;
+}
+
+/** `send()` takes the same, plus who the `@handle` tokens in `text` point at. */
+export interface SendOptions extends ReplyOptions {
+  mentions?: MentionLike[];
+}
+
+/**
+ * `reply('hi')`, `reply('hi', { embeds })` and `reply({ embeds })` are all
+ * legal — an embed-only message carries no text, so the text argument is
+ * optional and the options object may take its place.
+ */
+function splitTextAndOptions(
+  textOrOptions: string | SendOptions,
+  maybeOptions?: SendOptions,
+): [string, SendOptions] {
+  if (typeof textOrOptions === 'string') return [textOrOptions, maybeOptions ?? {}];
+  return ['', textOrOptions];
+}
+
+/**
+ * A send with nothing in it is refused here, before the round trip — the
+ * server would answer `empty_text`, and an embed-only send is legal, so the
+ * precondition is "text OR embeds OR buttons", not "text".
+ */
+function requireSomethingToSay(
+  text: string,
+  embeds: ReadonlyArray<unknown>,
+  buttons: ReadonlyArray<unknown>,
+): void {
+  if (text === '' && embeds.length === 0 && buttons.length === 0) {
+    throw new Error(NOTHING_TO_SAY);
+  }
 }
 
 /** Accepts either a `Chat` or a raw chat id string — Context actions take both. */
@@ -255,8 +321,10 @@ export type MemberEventType = 'member.joined' | 'member.left';
 export type BotEventType = 'bot.added' | 'bot.removed';
 /** `reaction.added` — on one of this bot's own messages. There is no `reaction.removed`. */
 export type ReactionEventType = 'reaction.added';
+/** `button.pressed` — someone pressed a button on one of this bot's own messages (AMENDMENT-05). */
+export type ButtonEventType = 'button.pressed';
 /** Every event type `bot.on()` names. `command.invoked` goes through `bot.command()`. */
-export type EventType = MemberEventType | BotEventType | ReactionEventType;
+export type EventType = MemberEventType | BotEventType | ReactionEventType | ButtonEventType;
 
 interface BaseInit {
   chat: Chat;
@@ -295,24 +363,53 @@ export class BaseContext {
    * `HttpClient.request` itself. When the event carried no message id the
    * `reply_to` field is omitted and the reply floats free.
    */
-  async reply(text: string): Promise<Message> {
-    const sent = await this.#http.sendMessage(this.chat.id, text, randomUUID(), this.quotes());
+  async reply(text: string, options?: ReplyOptions): Promise<Message>;
+  async reply(options: ReplyOptions): Promise<Message>;
+  async reply(textOrOptions: string | ReplyOptions = '', maybeOptions?: ReplyOptions) {
+    const [text, options] = splitTextAndOptions(textOrOptions, maybeOptions);
+    const embeds = serialiseEmbeds(options.embeds);
+    const buttons = serialiseButtons(options.buttons);
+    requireSomethingToSay(text, embeds, buttons);
+    const sent = await this.#http.sendMessage(
+      this.chat.id,
+      text,
+      randomUUID(),
+      this.quotes(),
+      undefined,
+      embeds,
+      buttons,
+    );
     return messageFromWire(sent);
   }
 
   /**
    * Send a message to any chat this bot is in — this one or another.
    * `mentions` names who `@handle` tokens in `text` point at: pass
-   * `mention(user)`, a `User`, or `{ user: 'usr_…' }`. Returns the stored
-   * message.
+   * `mention(user)`, a `User`, or `{ user: 'usr_…' }`. `embeds`/`buttons`
+   * accept a builder or a plain object literal, validated the same either
+   * way. Returns the stored message.
    */
+  async send(chat: Chat | string, text: string, options?: SendOptions): Promise<Message>;
+  async send(chat: Chat | string, options: SendOptions): Promise<Message>;
   async send(
     chat: Chat | string,
-    text: string,
-    options: { mentions?: MentionLike[] } = {},
-  ): Promise<Message> {
+    textOrOptions: string | SendOptions = '',
+    maybeOptions?: SendOptions,
+  ) {
+    const [text, options] = splitTextAndOptions(textOrOptions, maybeOptions);
     const mentions = options.mentions?.map(mentionEntry);
-    const sent = await this.#http.sendMessage(chatId(chat), text, randomUUID(), null, mentions);
+    const embeds = serialiseEmbeds(options.embeds);
+    const buttons = serialiseButtons(options.buttons);
+    requireSomethingToSay(text, embeds, buttons);
+    const sent = await this.#http.sendMessage(
+      chatId(chat),
+      text,
+      randomUUID(),
+      null,
+      mentions,
+      embeds,
+      buttons,
+    );
     return messageFromWire(sent);
   }
 
@@ -539,6 +636,62 @@ export class ReactionContext extends BaseContext {
   }
 }
 
+export interface ButtonContextInit extends BaseInit {
+  user: User;
+  message: Message;
+  button: string;
+  interaction: string;
+}
+
+/** `button.pressed`: someone pressed a button on one of this bot's own messages (AMENDMENT-05). */
+export class ButtonContext extends BaseContext {
+  readonly #http: HttpClient;
+  /** Who pressed the button. */
+  readonly user: User;
+  /** The bot's message the button lives on — id only; the text is not re-sent. `reply()` quotes it. */
+  readonly message: Message;
+  /** The pressed button's id. */
+  readonly button: string;
+  /** The interaction id — `ack()` posts to `/v1/interactions/{interaction}/ack`. */
+  readonly interaction: string;
+
+  constructor(init: ButtonContextInit) {
+    super(init);
+    this.#http = init.http;
+    this.user = init.user;
+    this.message = init.message;
+    this.button = init.button;
+    this.interaction = init.interaction;
+  }
+
+  protected override quotes(): string | null {
+    return this.message.id === '' ? null : this.message.id;
+  }
+
+  /**
+   * Acknowledge the button press — `POST /v1/interactions/{interaction}/ack`,
+   * 204 no body. Acking twice is `InteractionAlreadyUsed` (surfaced through
+   * the existing code -> class mapping; there is no dedicated class here).
+   */
+  async ack(): Promise<void> {
+    await this.#http.ackInteraction(this.interaction);
+  }
+
+  static fromEvent(event: Event, http: HttpClient): ButtonContext {
+    const data = event.data;
+    const ref = data['message'];
+    return new ButtonContext({
+      chat: chatFromWire(asRecord(data['chat']) ?? {}),
+      user: userField(data, 'user'),
+      message: typeof ref === 'string' ? messageFromRef(ref) : EMPTY_MESSAGE,
+      button: asString(data['button']),
+      interaction: asString(data['interaction']),
+      event,
+      http,
+    });
+  }
+}
+
 export interface EventContextInit extends BaseInit {
   sender: User | null;
   user: User | null;
@@ -590,11 +743,12 @@ export class EventContext extends BaseContext {
 }
 
 /** Any context a handler can receive. What `bot.onError()` sees beside the error. */
-export type AnyContext = Context | MemberContext | BotContext | ReactionContext | EventContext;
+export type AnyContext =
+  Context | MemberContext | BotContext | ReactionContext | ButtonContext | EventContext;
 
 /**
  * The context class for an event, by its type. `command.invoked` gets
- * `Context`; the three named families get theirs; anything else gets
+ * `Context`; the four named families get theirs; anything else gets
  * `EventContext`. The dispatch side of BA-R68 — `bot.ts` calls this and
  * hands the result to every handler registered for the type.
  */
@@ -610,6 +764,8 @@ export function contextFor(event: Event, http: HttpClient): AnyContext {
       return BotContext.fromEvent(event, http);
     case 'reaction.added':
       return ReactionContext.fromEvent(event, http);
+    case 'button.pressed':
+      return ButtonContext.fromEvent(event, http);
     default:
       return EventContext.fromEvent(event, http);
   }

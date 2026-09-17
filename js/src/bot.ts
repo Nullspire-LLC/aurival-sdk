@@ -9,6 +9,8 @@ import type {
   AnyContext,
   BotContext,
   BotEventType,
+  ButtonContext,
+  ButtonEventType,
   Command,
   EventContext,
   MemberContext,
@@ -41,6 +43,8 @@ export type MemberHandler = (ctx: MemberContext) => Promise<void> | void;
 export type BotHandler = (ctx: BotContext) => Promise<void> | void;
 /** A `reaction.added` handler. */
 export type ReactionHandler = (ctx: ReactionContext) => Promise<void> | void;
+/** A `button.pressed` handler. */
+export type ButtonHandler = (ctx: ButtonContext) => Promise<void> | void;
 /** A handler for an event type this SDK does not name — every field optional. */
 export type EventHandler = (ctx: EventContext) => Promise<void> | void;
 type AnyHandler = (ctx: never) => Promise<void> | void;
@@ -246,6 +250,7 @@ export class Bot {
   on(type: MemberEventType, handler: MemberHandler): void;
   on(type: BotEventType, handler: BotHandler): void;
   on(type: ReactionEventType, handler: ReactionHandler): void;
+  on(type: ButtonEventType, handler: ButtonHandler): void;
   // `string & {}` keeps the literals above in autocomplete while still
   // accepting a type this SDK has not named yet.
   on(type: string & {}, handler: EventHandler): void;

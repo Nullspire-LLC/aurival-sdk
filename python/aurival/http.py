@@ -218,13 +218,19 @@ class HttpClient:
         *,
         idempotency_key: str,
         mentions: list[dict[str, str]] | None = None,
+        embeds: list[dict[str, object]] | None = None,
+        buttons: list[dict[str, object]] | None = None,
     ) -> dict:
         body: dict[str, object] = {"chat": chat, "text": text}
         # CONTRACT-V1 §5.0.1: absent and `[]` mean exactly the same thing, so
         # an empty list is omitted rather than sent — matching the js seam,
-        # not merely legal per the contract.
+        # not merely legal per the contract. Same rule for embeds/buttons.
         if mentions:
             body["mentions"] = mentions
+        if embeds:
+            body["embeds"] = embeds
+        if buttons:
+            body["buttons"] = buttons
         return await self.request(
             "POST",
             "/v1/messages",
@@ -266,6 +272,13 @@ class HttpClient:
         return await self.request(
             "DELETE",
             f"/v1/messages/{msg}/reactions/{urllib.parse.quote(emoji, safe='')}",
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    async def ack_interaction(self, interaction: str) -> dict:
+        return await self.request(
+            "POST",
+            f"/v1/interactions/{interaction}/ack",
             idempotency_key=str(uuid.uuid4()),
         )
 

@@ -99,6 +99,7 @@ _TYPED_SAMPLE = """
 from aurival import (
     Bot,
     BotContext,
+    ButtonContext,
     Context,
     EventContext,
     MemberContext,
@@ -146,6 +147,16 @@ async def reacted(ctx: ReactionContext) -> None:
 async def future(ctx: EventContext) -> None:
     if ctx.user is not None:
         await ctx.reply(ctx.user.handle)
+
+
+@bot.on("button.pressed")
+async def pressed(ctx: ButtonContext) -> None:
+    button_id: str = ctx.button
+    interaction: str = ctx.interaction
+    presser: User = ctx.user
+    message: Message = ctx.message
+    await ctx.ack()
+    await ctx.reply(f"{presser.name} pressed {button_id} ({interaction}, {message.id})")
 """
 
 _MISTYPED_LINE = """
@@ -153,6 +164,11 @@ _MISTYPED_LINE = """
 @bot.on("member.left")
 async def wrong(ctx: MemberContext) -> None:
     print(ctx.emoji)
+
+
+@bot.on("member.left")
+async def wrong_button(ctx: ButtonContext) -> None:
+    pass
 """
 
 

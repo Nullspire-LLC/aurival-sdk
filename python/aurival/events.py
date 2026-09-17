@@ -21,6 +21,16 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
+from .caps import EMPTY_MESSAGE
+from .embeds import (
+    Button,
+    ButtonLike,
+    ButtonUsed,
+    Embed,
+    EmbedLike,
+    serialise_buttons,
+    serialise_embeds,
+)
 from .errors import AurivalError
 
 if TYPE_CHECKING:
@@ -32,7 +42,15 @@ if TYPE_CHECKING:
 MemberEventType = Literal["member.joined", "member.left"]
 BotEventType = Literal["bot.added", "bot.removed"]
 ReactionEventType = Literal["reaction.added"]
-EventType = Literal["member.joined", "member.left", "bot.added", "bot.removed", "reaction.added"]
+ButtonEventType = Literal["button.pressed"]
+EventType = Literal[
+    "member.joined",
+    "member.left",
+    "bot.added",
+    "bot.removed",
+    "reaction.added",
+    "button.pressed",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,6 +118,9 @@ class Message:
     sent_at: str
     sender: User | None
     reply_to: str | None
+    embeds: list[Embed] = dataclasses.field(default_factory=list)
+    buttons: list[Button] = dataclasses.field(default_factory=list)
+    button_used: ButtonUsed | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -171,11 +192,52 @@ def _message_from_ref(v: object) -> Message | None:
     object — unlike `command.invoked`'s `invoking_message`. §3.1: this is
     always a reference string in this position, never a full object."""
     if isinstance(v, str):
-        return Message(id=v, text="", sent_at="", sender=None, reply_to=None)
+        return Message(
+            id=v,
+            text="",
+            sent_at="",
+            sender=None,
+            reply_to=None,
+            embeds=[],
+            buttons=[],
+            button_used=None,
+        )
     return None
 
 
-_EMPTY_MESSAGE = Message(id="", text="", sent_at="", sender=None, reply_to=None)
+_EMPTY_MESSAGE = Message(
+    id="", text="", sent_at="", sender=None, reply_to=None, embeds=[], buttons=[], button_used=None
+)
+
+
+def _embeds_from_wire(v: object) -> list[Embed]:
+    # `embeds`/`buttons` are ALWAYS present on the wire and `null` when unused
+    # (AMENDMENT-05 §3, CONTRACT-V1 §2.1 nullable list) — a 0.3.x-era server
+    # omits the key entirely. `null` and absent decode identically to `[]`;
+    # `None` must never reach `Message.embeds`/`.buttons`.
+    if not isinstance(v, list):
+        return []
+    return [Embed.from_dict(e) for e in v if isinstance(e, dict)]
+
+
+def _buttons_from_wire(v: object) -> list[Button]:
+    if not isinstance(v, list):
+        return []
+    return [Button.from_dict(b) for b in v if isinstance(b, dict)]
+
+
+def _button_used_from_wire(v: object) -> ButtonUsed | None:
+    return ButtonUsed.from_dict(v) if isinstance(v, dict) else None
+
+
+def _require_something_to_say(
+    text: str, embeds: list[dict[str, object]], buttons: list[dict[str, object]]
+) -> None:
+    """A send with nothing in it is refused here, before the round trip — the
+    server would answer `empty_text`, and an embed-only send is legal, so the
+    precondition is "text OR embeds OR buttons", not "text"."""
+    if not text and not embeds and not buttons:
+        raise ValueError(EMPTY_MESSAGE)
 
 
 def _ref_id(x: object) -> str:
@@ -217,6 +279,9 @@ def _message_from_wire(d: dict[str, object]) -> Message:
         sent_at=sent_at if isinstance(sent_at, str) else "",
         sender=who,
         reply_to=reply_to if isinstance(reply_to, str) else None,
+        embeds=_embeds_from_wire(d.get("embeds")),
+        buttons=_buttons_from_wire(d.get("buttons")),
+        button_used=_button_used_from_wire(d.get("button_used")),
     )
 
 
@@ -239,18 +304,26 @@ class BaseContext:
         Overridden by the contexts that carry a message."""
         return None
 
-    async def reply(self, text: str) -> Message:
+    async def reply(
+        self,
+        text: str = "",
+        *,
+        embeds: list[EmbedLike] | None = None,
+        buttons: list[ButtonLike] | None = None,
+    ) -> Message:
         """Send `text` to this chat, quoting the message the event was about
         when it carried one (BA-R27, reversing SDK-30) — `ctx.reply()` in a
         command handler quotes the invoking message, in a reaction handler the
         message that was reacted to, and in a membership handler it sends a
         plain message because there is nothing to quote. One method, no flag.
-        Returns the `Message` the server stored.
+        Pass `embeds`/`buttons` to attach a card — `text` is optional when
+        either is present, so `ctx.reply(embeds=[card])` is an embed-only
+        reply. Returns the `Message` the server stored.
 
         A fresh `Idempotency-Key` per call, reused across that call's retries
         by `HttpClient.request` itself.
         """
-        body: dict[str, str] = {"chat": self.chat.id, "text": text}
+        body: dict[str, object] = {"chat": self.chat.id, "text": text}
         # OMITTED, NEVER null. `reply_to` is an optional request parameter, and
         # the server 404s anything that is not a decodable `msg_…` — including
         # an explicit null — with the same `not_found` an unresolvable id gets
@@ -259,6 +332,13 @@ class BaseContext:
         quoted = self._quotes()
         if quoted:
             body["reply_to"] = quoted
+        serialised_embeds = serialise_embeds(embeds)
+        if serialised_embeds:
+            body["embeds"] = serialised_embeds
+        serialised_buttons = serialise_buttons(buttons)
+        if serialised_buttons:
+            body["buttons"] = serialised_buttons
+        _require_something_to_say(text, serialised_embeds, serialised_buttons)
         response = await self._http.request(
             "POST",
             "/v1/messages",
@@ -270,19 +350,31 @@ class BaseContext:
     async def send(
         self,
         chat: Chat | str,
-        text: str,
+        text: str = "",
         *,
         mentions: list[Mention | User | dict[str, str]] | None = None,
+        embeds: list[EmbedLike] | None = None,
+        buttons: list[ButtonLike] | None = None,
     ) -> Message:
         """Post `text` to any chat the bot is in — `ctx.chat` or another one —
         as a plain message, never quoting. Pass `mentions` to @-mention
         people: each entry is a `Mention` from `mention(user)`, a bare `User`,
         or `{"user": "usr_…"}`, and its `@handle` token has to appear in
-        `text` or the server refuses the send. Returns the `Message` the
-        server stored."""
+        `text` or the server refuses the send. Pass `embeds`/`buttons` to
+        attach a card — `text` is optional when either is present, so
+        `ctx.send(chat, embeds=[card])` is an embed-only message. Returns
+        the `Message` the server stored."""
         entries = [_mention_entry(m) for m in mentions] if mentions is not None else None
+        serialised_embeds = serialise_embeds(embeds)
+        serialised_buttons = serialise_buttons(buttons)
+        _require_something_to_say(text, serialised_embeds, serialised_buttons)
         response = await self._http.send_message(
-            _ref_id(chat), text, idempotency_key=str(uuid.uuid4()), mentions=entries
+            _ref_id(chat),
+            text,
+            idempotency_key=str(uuid.uuid4()),
+            mentions=entries,
+            embeds=serialised_embeds,
+            buttons=serialised_buttons,
         )
         return _message_from_wire(response)
 
@@ -470,6 +562,41 @@ class ReactionContext(BaseContext):
         return self.message.id or None
 
 
+class ButtonContext(BaseContext):
+    """What a `button.pressed` handler receives: the `user` who pressed it,
+    the `button` id, the `interaction` id to `ack()`, and the `message` the
+    button was on — id-only (`.id` set, the rest empty), same spirit as
+    `ReactionContext`, because the wire carries only a bare id here, not a
+    full object. `ctx.reply()` quotes that message."""
+
+    def __init__(
+        self,
+        *,
+        event: Event,
+        http: HttpClient,
+        chat: Chat,
+        user: User,
+        message: Message,
+        button: str,
+        interaction: str,
+    ) -> None:
+        super().__init__(event=event, http=http, chat=chat)
+        self.user = user
+        self.message = message
+        self.button = button
+        self.interaction = interaction
+
+    def _quotes(self) -> str | None:
+        return self.message.id or None
+
+    async def ack(self) -> None:
+        """Acknowledge the button press — `POST /v1/interactions/{id}/ack`,
+        204 no body. The interaction id sent is `self.interaction` verbatim,
+        the `button.pressed` event's own id (AMENDMENT-05 §3) — no prefix
+        rewriting."""
+        await self._http.ack_interaction(self.interaction)
+
+
 class EventContext(BaseContext):
     """What a handler for a type this SDK does not know yet receives. Never
     raises — a bot must keep running against a server that has shipped an
@@ -500,7 +627,21 @@ class EventContext(BaseContext):
         return self.message.id if self.message is not None and self.message.id else None
 
 
-AnyContext = Context | MemberContext | BotContext | ReactionContext | EventContext
+AnyContext = (
+    Context | MemberContext | BotContext | ReactionContext | ButtonContext | EventContext
+)
+
+
+def _chat_field_or_ref(data: dict[str, object]) -> Chat:
+    """`button.pressed`'s `chat` is a bare `chat_…` id, not the nested object
+    every other event family carries (WIRE SHAPES (d) in the brief) — accept
+    either so a future server that widens it back to an object still works."""
+    chat = data.get("chat")
+    if isinstance(chat, dict):
+        return _chat_from_wire(chat)
+    if isinstance(chat, str):
+        return Chat(id=chat, type="", name=None, member_count=None)
+    return Chat(id="", type="", name=None, member_count=None)
 
 
 def context_for(event: Event, *, http: HttpClient) -> AnyContext:
@@ -528,6 +669,19 @@ def context_for(event: Event, *, http: HttpClient) -> AnyContext:
             sender=_user_field(data, "sender"),
             message=_message_from_ref(data.get("message")) or _EMPTY_MESSAGE,
             emoji=emoji if isinstance(emoji, str) else "",
+        )
+    if event.type == "button.pressed":
+        interaction = data.get("interaction")
+        return ButtonContext(
+            event=event,
+            http=http,
+            chat=_chat_field_or_ref(data),
+            user=_user_field(data, "user"),
+            message=_message_from_ref(data.get("message")) or _EMPTY_MESSAGE,
+            button=str(data.get("button", "")),
+            interaction=(
+                str(interaction) if isinstance(interaction, str) and interaction else event.id
+            ),
         )
     emoji = data.get("emoji")
     return EventContext(

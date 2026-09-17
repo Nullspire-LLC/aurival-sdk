@@ -11,6 +11,10 @@
  * is listed here, and in `TYPE_ONLY`, purely so `tsc` catches its removal; it
  * is excluded from the runtime-surface comparison below because it is
  * type-only, and it is not part of the Python mirror contract.
+ *
+ * AMENDMENT-05 (0.4.0) adds the embeds/buttons surface: `Embed`, `Button`
+ * (runtime builder classes) and `ButtonContext` (a fourth `on()`-family
+ * context, alongside `ButtonUsed`, a type-only decoded-wire interface).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -28,11 +32,13 @@ import type {
   MemberPage,
   MentionLike,
   User,
+  ButtonUsed,
 } from '../src/index.js';
 import { readFileSync } from 'node:fs';
 
 // `AnyContext` and `EventType` are type-only in both languages: Python spells
 // them as a `Union` and a `Literal`, which have no runtime class either.
+// `ButtonUsed` is a decoded-wire record type, same shape as `Chat`/`Command`.
 const TYPE_ONLY = [
   'AnyContext',
   'Chat',
@@ -41,6 +47,7 @@ const TYPE_ONLY = [
   'MemberPage',
   'MentionLike',
   'User',
+  'ButtonUsed',
 ] as const;
 
 /** Exactly Python's `__all__`, with its three casing changes applied. */
@@ -65,12 +72,16 @@ const EXPECTED = [
   'BotLinkNotAllowed',
   'BotPlaygroundOnly',
   'BotSuspended',
+  'Button',
+  'ButtonContext',
+  'ButtonUsed',
   'ByeAction',
   'CODE_CLASSES',
   'Chat',
   'Command',
   'Context',
   'DOC_URL_PREFIX',
+  'Embed',
   'EmptyText',
   'Event',
   'EventContext',
@@ -120,14 +131,15 @@ const EXPECTED = [
 ];
 
 describe('the public surface', () => {
-  // Python's `__all__` has 72 names (65 at AMENDMENT-04, plus the 7 BA-R68
+  // Python's `__all__` had 72 names (65 at AMENDMENT-04, plus the 7 BA-R68
   // context names: AnyContext, BaseContext, BotContext, EventContext,
-  // EventType, MemberContext, ReactionContext); 71 of them are mirrored here.
-  // `Message` is the one it does not mirror — it is a type-only export in
-  // `index.ts` and predates this list, so the count below is 71 mirrored
-  // names plus the JS-only `MentionLike`.
-  it('is exactly the 71 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(72);
+  // EventType, MemberContext, ReactionContext); 71 of them were mirrored
+  // here. `Message` is the one it does not mirror — it is a type-only export
+  // in `index.ts` and predates this list. AMENDMENT-05 (0.4.0) adds four more
+  // mirrored names — `Button`, `ButtonContext`, `ButtonUsed`, `Embed` — so the
+  // count below is 75 mirrored names plus the JS-only `MentionLike`.
+  it('is exactly the 75 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(76);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -204,6 +216,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.3.0');
+    expect(aurival.version).toBe('0.4.0');
   });
 });

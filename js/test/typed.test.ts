@@ -22,7 +22,10 @@ const tsc = path.resolve(here, '..', 'node_modules', 'typescript', 'bin', 'tsc')
 const TYPED_SAMPLE = `
 import {
   Bot,
+  Button,
+  Embed,
   type BotContext,
+  type ButtonContext,
   type Context,
   type EventContext,
   type MemberContext,
@@ -69,6 +72,14 @@ bot.on('some.future.type', async (ctx: EventContext) => {
   if (ctx.user !== null) await ctx.reply(ctx.user.handle);
 });
 
+bot.on('button.pressed', async (ctx: ButtonContext) => {
+  const pressed: User = ctx.user;
+  const embed = new Embed({ title: 'ok' }).addField('who', pressed.name);
+  const button = new Button({ label: 'Again' });
+  await ctx.ack();
+  await ctx.reply('thanks, ' + pressed.name, { embeds: [embed], buttons: [button] });
+});
+
 bot.onError(async (_error, ctx) => {
   if (ctx !== null) await ctx.reply('sorry');
 });
@@ -85,6 +96,13 @@ async function onlyBots(ctx: BotContext): Promise<void> {
   await ctx.reply(ctx.actor.name);
 }
 bot.on('member.joined', onlyBots);
+`;
+
+const MISTYPED_BUTTON_FAMILY = `
+async function onlyReactions(ctx: ReactionContext): Promise<void> {
+  await ctx.reply(ctx.emoji);
+}
+bot.on('button.pressed', onlyReactions);
 `;
 
 const dirs: string[] = [];
@@ -142,5 +160,11 @@ describe('the typed sample under tsc', () => {
     const result = check(TYPED_SAMPLE + MISTYPED_FAMILY);
     expect(result.ok).toBe(false);
     expect(result.output).toMatch(/BotContext|MemberContext/);
+  }, 60_000);
+
+  it('rejects a ReactionContext handler registered for button.pressed', () => {
+    const result = check(TYPED_SAMPLE + MISTYPED_BUTTON_FAMILY);
+    expect(result.ok).toBe(false);
+    expect(result.output).toMatch(/ReactionContext|ButtonContext/);
   }, 60_000);
 });

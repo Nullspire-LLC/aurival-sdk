@@ -30,6 +30,8 @@ from .events import (
     AnyContext,
     BotContext,
     BotEventType,
+    ButtonContext,
+    ButtonEventType,
     Command,
     Context,
     Event,
@@ -54,6 +56,7 @@ Handler = Callable[[Context], Awaitable[None]]
 MemberHandler = Callable[[MemberContext], Awaitable[None]]
 BotHandler = Callable[[BotContext], Awaitable[None]]
 ReactionHandler = Callable[[ReactionContext], Awaitable[None]]
+ButtonHandler = Callable[[ButtonContext], Awaitable[None]]
 EventHandler = Callable[[EventContext], Awaitable[None]]
 # What the registry stores: every `on()` handler, whatever context class its
 # overload promised it. `Any` because the overloads are the typed door and the
@@ -194,6 +197,12 @@ class Bot:
     @overload
     def on(self, event_type: ReactionEventType, fn: ReactionHandler) -> ReactionHandler: ...
 
+    @overload
+    def on(self, event_type: ButtonEventType) -> Callable[[ButtonHandler], ButtonHandler]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def on(self, event_type: ButtonEventType, fn: ButtonHandler) -> ButtonHandler: ...
+
     # The plain-`str` pair is the forward-compatibility door: a type this SDK
     # does not name yet gets an `EventContext`. Typed against `EventHandler`,
     # not `Any`, so a handler of the wrong family is refused in the direct-call
@@ -216,6 +225,7 @@ class Bot:
             member.joined, member.left   MemberContext    ctx.user
             bot.added, bot.removed       BotContext       ctx.actor
             reaction.added               ReactionContext  ctx.sender, ctx.message, ctx.emoji
+            button.pressed               ButtonContext    ctx.button, ctx.interaction, ctx.ack()
             anything else                EventContext     every field optional
 
         Distinct registry from `@bot.command`; multiple handlers for the same

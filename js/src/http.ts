@@ -251,10 +251,14 @@ export class HttpClient {
     idempotencyKey: string,
     replyTo?: string | null,
     mentions?: Array<{ user: string }>,
+    embeds?: Array<Record<string, unknown>>,
+    buttons?: Array<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = { chat, text };
     if (replyTo != null && replyTo !== '') body['reply_to'] = replyTo;
     if (mentions !== undefined && mentions.length > 0) body['mentions'] = mentions;
+    if (embeds !== undefined && embeds.length > 0) body['embeds'] = embeds;
+    if (buttons !== undefined && buttons.length > 0) body['buttons'] = buttons;
     return this.request('POST', '/v1/messages', { body, idempotencyKey });
   }
 
@@ -286,6 +290,13 @@ export class HttpClient {
 
   async unsetReaction(message: string, emoji: string): Promise<void> {
     await this.request('DELETE', `/v1/messages/${message}/reactions/${encodeURIComponent(emoji)}`, {
+      idempotencyKey: randomUUID(),
+    });
+  }
+
+  /** `POST /v1/interactions/{interaction}/ack` -> 204, no body. `interaction` is the `button.pressed` event id (`evt_…`), unrewritten. */
+  async ackInteraction(interaction: string): Promise<void> {
+    await this.request('POST', `/v1/interactions/${interaction}/ack`, {
       idempotencyKey: randomUUID(),
     });
   }

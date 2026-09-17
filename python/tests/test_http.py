@@ -351,6 +351,66 @@ async def test_invalid_request_error_raises_immediately_with_message_intact():
 
 
 @pytest.mark.asyncio
+async def test_send_message_omits_embeds_and_buttons_when_empty():
+    bodies = []
+
+    async def handler(request: web.Request):
+        bodies.append(await request.json())
+        return web.json_response({"chat": "chat_1", "text": "hi"}, status=201)
+
+    app = web.Application()
+    app.router.add_post("/v1/messages", handler)
+    async with Serve(app) as s:
+        client = s.client(auth=FakeAuth())
+        await client.send_message("chat_1", "hi", idempotency_key="idem-embeds-empty")
+        await client.send_message(
+            "chat_1", "hi", idempotency_key="idem-embeds-empty-list", embeds=[], buttons=[]
+        )
+        assert "embeds" not in bodies[0]
+        assert "buttons" not in bodies[0]
+        assert "embeds" not in bodies[1]
+        assert "buttons" not in bodies[1]
+
+
+@pytest.mark.asyncio
+async def test_send_message_carries_embeds_and_buttons_when_present():
+    bodies = []
+    embed = {"title": "Trivia round 4", "color": "#3E6E8E"}
+    button = {"id": "pacific", "label": "Pacific", "style": "primary"}
+
+    async def handler(request: web.Request):
+        bodies.append(await request.json())
+        return web.json_response({"chat": "chat_1", "text": "hi"}, status=201)
+
+    app = web.Application()
+    app.router.add_post("/v1/messages", handler)
+    async with Serve(app) as s:
+        client = s.client(auth=FakeAuth())
+        await client.send_message(
+            "chat_1", "hi", idempotency_key="idem-embeds", embeds=[embed], buttons=[button]
+        )
+        assert bodies[0]["embeds"] == [embed]
+        assert bodies[0]["buttons"] == [button]
+
+
+@pytest.mark.asyncio
+async def test_ack_interaction_posts_and_tolerates_204():
+    seen = []
+
+    async def handler(request: web.Request):
+        seen.append(request.path)
+        return web.Response(status=204)
+
+    app = web.Application()
+    app.router.add_post("/v1/interactions/evt_01J9/ack", handler)
+    async with Serve(app) as s:
+        client = s.client(auth=FakeAuth())
+        result = await client.ack_interaction("evt_01J9")
+        assert result == {}
+        assert seen == ["/v1/interactions/evt_01J9/ack"]
+
+
+@pytest.mark.asyncio
 async def test_permission_error_raises_immediately():
     calls = 0
 

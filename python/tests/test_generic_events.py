@@ -68,10 +68,21 @@ class _StubHttp:
         return {}
 
     async def send_message(
-        self, chat: str, text: str, *, idempotency_key: str, mentions=None
+        self,
+        chat: str,
+        text: str,
+        *,
+        idempotency_key: str,
+        mentions=None,
+        embeds=None,
+        buttons=None,
     ) -> dict:
-        self.calls.append(("send_message", chat, text, mentions))
+        self.calls.append(("send_message", chat, text, mentions, embeds, buttons))
         return {"id": "msg_new"}
+
+    async def ack_interaction(self, interaction: str) -> dict:
+        self.calls.append(("ack_interaction", interaction))
+        return {}
 
 
 # --- R1: registration, decorator and direct call ---------------------------
@@ -475,6 +486,8 @@ async def test_ctx_send_converts_mention_user_and_dict_entries() -> None:
             "chat_2",
             "hi @wing",
             [{"user": "usr_5"}, {"user": "usr_5"}, {"user": "usr_7"}],
+            [],
+            [],
         )
     ]
 
