@@ -184,7 +184,8 @@ bot.command('fix', async (ctx) => {
 });
 
 bot.command('oops', async (ctx) => {
-  await ctx.delete(ctx.message);
+  const sent = await ctx.reply('ignore that');
+  await ctx.delete(sent);
 });
 
 bot.command('upvote', async (ctx) => {
@@ -224,6 +225,10 @@ straight back to `edit()`, `delete()` and `react()` — no id juggling. The `sen
 those, when it is set at all, is known by id alone — `handle` and `name` are empty strings,
 because the REST entity names the sender with a bare `usr_…`.
 
+`edit()` and `delete()` take only the bot's own messages; anyone else's answers
+`message_not_yours`, which is why `oops` above deletes the reply it just sent rather than the
+message that invoked it. `react()` and `unreact()` work on any message in a chat the bot is in.
+
 The typing indicator is automatic: a command handler still running 300 ms after it started
 shows the chat "is thinking", and the indicator clears when the handler returns, including on a
 throw. A handler that replies inside those 300 ms sends nothing, so a fast bot never flickers.
@@ -259,8 +264,8 @@ already uses:
 import { Embed, Button } from 'aurival';
 
 const embed = new Embed({ title: 'Trivia round 4', description: 'Which ocean is the deepest?', color: '#3E6E8E' })
-  .setAuthor('Quizbot', 'https://cdn.aurival.com/q.png')
-  .setThumbnail('https://cdn.aurival.com/t.png')
+  .setAuthor('Quizbot', 'https://quizbot.example/q.png')
+  .setThumbnail('https://quizbot.example/t.png')
   .addField('Players', '6', true)
   .addField('Round', '4 of 10', true)
   .setFooter('Answer within 30s');
@@ -342,9 +347,9 @@ const embed = new Embed({
   color: '#3E6E8E',
   url: 'https://aurival.com/spaces/deepcuts',
 })
-  .setAuthor('Deep Cuts', 'https://cdn.aurival.com/dc.png', 'https://aurival.com/u/deepcuts')
-  .setThumbnail('https://cdn.aurival.com/cover.jpg')
-  .setFooter('set by deepcuts', 'https://cdn.aurival.com/dc-small.png');
+  .setAuthor('Deep Cuts', 'https://deepcuts.example/dc.png', 'https://aurival.com/u/deepcuts')
+  .setThumbnail('https://deepcuts.example/cover.jpg')
+  .setFooter('set by deepcuts', 'https://deepcuts.example/dc-small.png');
 
 await ctx.reply("Tonight's lineup.", { embeds: [embed] });
 ```

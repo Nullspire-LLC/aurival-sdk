@@ -274,8 +274,8 @@ from aurival import Embed, Button
 
 embed = (
     Embed(title="Trivia round 4", description="Which ocean is the deepest?", color="#3E6E8E")
-    .set_author("Quizbot", icon="https://cdn.aurival.com/q.png")
-    .set_thumbnail("https://cdn.aurival.com/t.png")
+    .set_author("Quizbot", icon="https://quizbot.example/q.png")
+    .set_thumbnail("https://quizbot.example/t.png")
     .add_field("Players", "6", inline=True)
     .add_field("Round", "4 of 10", inline=True)
     .set_footer("Answer within 30s")
@@ -357,11 +357,11 @@ embed = (
     )
     .set_author(
         "Deep Cuts",
-        icon="https://cdn.aurival.com/dc.png",
+        icon="https://deepcuts.example/dc.png",
         url="https://aurival.com/u/deepcuts",
     )
-    .set_thumbnail("https://cdn.aurival.com/cover.jpg")
-    .set_footer("set by deepcuts", icon="https://cdn.aurival.com/dc-small.png")
+    .set_thumbnail("https://deepcuts.example/cover.jpg")
+    .set_footer("set by deepcuts", icon="https://deepcuts.example/dc-small.png")
 )
 await ctx.reply("Tonight's lineup.", embeds=[embed])
 ```
