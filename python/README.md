@@ -81,8 +81,8 @@ async def say(ctx: Context) -> None:
     ctx.command       # "say"
     ctx.arguments     # the raw rest of the line, unparsed, possibly ""
     ctx.chat          # Chat(id, type, name, member_count)
-    ctx.sender        # User(id, handle, name) — always set
-    ctx.message.text  # "/say hi" — the invoking message, verbatim
+    ctx.sender        # User(id, handle, name), always set
+    ctx.message.text  # "/say hi", the invoking message, verbatim
     await ctx.reply("…")
 ```
 

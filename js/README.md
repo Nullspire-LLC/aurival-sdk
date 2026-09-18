@@ -75,8 +75,8 @@ bot.command('say', async (ctx) => {
   ctx.command; // "say"
   ctx.arguments; // the raw rest of the line, unparsed, possibly ""
   ctx.chat; // { id, type, name, member_count }
-  ctx.sender; // { id, handle, name } — always set
-  ctx.message.text; // "/say hi" — the invoking message, verbatim
+  ctx.sender; // { id, handle, name }, always set
+  ctx.message.text; // "/say hi", the invoking message, verbatim
   await ctx.reply('…');
 });
 ```
