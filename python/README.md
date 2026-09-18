@@ -593,6 +593,23 @@ legitimate once an hour.
 Link buttons are outside all of this — a link opens on the device and never round-trips, so it
 cannot carry a cooldown and `Button.link` has no `cooldown` argument.
 
+### Keep one Cooldown per button
+
+A `Cooldown` owns its own bucket of remaining presses. Build a fresh one inside the ack handler —
+or anywhere a press can re-run it — and it forgets every prior press, so the cooldown never
+actually triggers. Define the `Cooldown` and the `Button` once, at module scope, and reuse those
+same objects on the send and on every ack that follows it:
+
+```python
+# Once, at module scope — not inside the handler.
+COOLDOWN = Cooldown(1, 10.0)
+BUTTON = Button("+1", id="inc", style="primary", cooldown=COOLDOWN)
+
+@bot.on("button.pressed")
+async def on_press(ctx: ButtonContext):
+    await ctx.ack(buttons=[BUTTON])   # the same BUTTON, never Button(...) rebuilt here
+```
+
 ### The caveat, said plainly
 
 **Buckets are process memory.** They reset on restart, and they are not shared between

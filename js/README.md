@@ -573,6 +573,23 @@ legitimate once an hour.
 Link buttons are outside all of this — a link opens on the device and never round-trips, so it
 cannot carry a cooldown and `Button.link` has no `cooldown` field.
 
+### Keep one Cooldown per button
+
+A `Cooldown` owns its own bucket of remaining presses. Build a fresh one inside the ack handler —
+or anywhere a press can re-run it — and it forgets every prior press, so the cooldown never
+actually triggers. Define the `Cooldown` and the `Button` once, at module scope, and reuse those
+same objects on the send and on every ack that follows it:
+
+```ts
+// Once, at module scope — not inside the handler.
+const cooldown = new Cooldown(1, 10);
+const button = new Button({ label: '+1', id: 'inc', style: 'primary', cooldown });
+
+bot.on('button.pressed', async (ctx) => {
+  await ctx.ack({ buttons: [button] });   // the same button, never rebuilt here
+});
+```
+
 ### The caveat, said plainly
 
 **Buckets are process memory.** They reset on restart, and they are not shared between
