@@ -22,6 +22,7 @@ import { CooldownRetryAfterInvalid } from '../src/errors.js';
 import { KeyFile, MachineKey, type Machine } from '../src/auth.js';
 import { COMMAND_COOLDOWN_NOTICE_TEMPLATE, commandCooldownNotice } from '../src/caps.js';
 import { sendHello, startGateway, waitUntil, type Script } from './wsserver.js';
+import type { Logger } from '../src/http.js';
 
 let stderrLines: string[];
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -745,6 +746,113 @@ describe('button press — the automatic cooldown ack (§3, §5.1)', () => {
         expect(ok).toBe(true);
         expect(errors).toHaveLength(1);
         expect(errors[0]).toBeInstanceOf(CooldownRetryAfterInvalid);
+      } finally {
+        controller.abort();
+        await task;
+      }
+    });
+    await gateway.close();
+  });
+});
+
+describe('the successful cooldown ack is visible in the log', () => {
+  /**
+   * The e2e lane found a button cooldown is otherwise invisible: the SDK
+   * answers the press itself, the handler never runs, and nothing is
+   * written, so a cooldown firing and a press vanishing look identical to a
+   * bot author. One info line on the success path, naming the message, the
+   * button, the presser and the window it sent. Mirrors
+   * `sdk/python/aurival/bot.py`'s line (SDK-7).
+   */
+  function recordingLogger(): { lines: string[]; logger: Logger } {
+    const lines: string[] = [];
+    return {
+      lines,
+      logger: {
+        debug: (m: string) => lines.push(`debug: ${m}`),
+        info: (m: string) => lines.push(`info: ${m}`),
+        warn: (m: string) => lines.push(`warn: ${m}`),
+        error: (m: string) => lines.push(`error: ${m}`),
+      },
+    };
+  }
+
+  it('logs one info line naming the message, button, presser and window', async () => {
+    const { lines, logger } = recordingLogger();
+    const gateway = await startCombinedFakeServer(async (conn) => {
+      sendHello(conn);
+      conn.send(buttonPressedEventFor('evt_1', 1, { interaction: 'evt_1' }));
+      conn.send(buttonPressedEventFor('evt_2', 2, { interaction: 'evt_2' }));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    await withPairedBot(gateway, async (_dir, keyPath) => {
+      const bot = new Bot({
+        host: gateway.host,
+        keyPath,
+        quiet: true,
+        logger,
+        buttonCooldown: { rate: 1, per: 30 },
+      });
+      bot.on('button.pressed', async () => undefined);
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() =>
+          lines.some((l) => l.startsWith('info: cooldown: acked press')),
+        );
+        expect(ok, 'no info line was written for the refused press').toBe(true);
+        const acked = lines.filter((l) => l.startsWith('info: cooldown: acked press'));
+        expect(acked).toHaveLength(1);
+        const line = acked[0] as string;
+        expect(line).toContain('msg_1');
+        expect(line).toContain('again');
+        expect(line).toContain('user_1');
+        expect(line).toContain('retry_after_ms=');
+      } finally {
+        controller.abort();
+        await task;
+      }
+    });
+    await gateway.close();
+  });
+
+  it('writes no info line when the ack is swallowed — nothing was acked', async () => {
+    const { lines, logger } = recordingLogger();
+    const gateway = await startCombinedFakeServer(
+      async (conn) => {
+        sendHello(conn);
+        conn.send(buttonPressedEventFor('evt_1', 1, { interaction: 'evt_1' }));
+        conn.send(buttonPressedEventFor('evt_2', 2, { interaction: 'evt_2' }));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      },
+      {
+        ackResponder: () => ({
+          status: 409,
+          body: {
+            type: 'invalid_request_error',
+            code: 'button_already_used',
+            message: 'already used',
+            doc_url: 'https://bots.aurival.com/docs/errors#button_already_used',
+          },
+        }),
+      },
+    );
+    await withPairedBot(gateway, async (_dir, keyPath) => {
+      const bot = new Bot({
+        host: gateway.host,
+        keyPath,
+        quiet: true,
+        logger,
+        buttonCooldown: { rate: 1, per: 30 },
+      });
+      bot.on('button.pressed', async () => undefined);
+      const controller = new AbortController();
+      const task = bot.start(controller.signal);
+      try {
+        const ok = await waitUntil(() => gateway.state.acksFor(0).includes('evt_2'));
+        expect(ok).toBe(true);
+        expect(lines.filter((l) => l.startsWith('info: cooldown: acked press'))).toHaveLength(0);
+        expect(lines.some((l) => l.includes('already resolved'))).toBe(true);
       } finally {
         controller.abort();
         await task;

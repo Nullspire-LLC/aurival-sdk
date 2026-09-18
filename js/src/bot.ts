@@ -705,6 +705,16 @@ export class Bot {
     if (this.#http === null) return;
     try {
       await this.#http.ackCooldown(ctx.interaction, ms);
+      // The ack landed. Without this line a button cooldown is invisible to
+      // the bot author: the SDK answers the press itself, the handler never
+      // runs, and nothing is written anywhere — so a cooldown firing and a
+      // press vanishing look identical from the outside. `info`, not
+      // `debug`, because the swallowed-refusal lines below are the ones a
+      // reader can ignore; this one is the cooldown working. Byte-mirrors
+      // `sdk/python/aurival/bot.py`'s sentence (SDK-7).
+      this.#log.info(
+        `cooldown: acked press on ${ctx.message.id}/${ctx.button} for ${ctx.user.id}, retry_after_ms=${ms}`,
+      );
     } catch (exc) {
       if (exc instanceof ButtonAlreadyUsed || exc instanceof NotFound) {
         this.#log.debug(

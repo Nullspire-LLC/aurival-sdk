@@ -251,17 +251,43 @@ describe('forUser on edit(): tri-state (§4.3)', () => {
     expect(body['for_user']).toBeNull();
   });
 
-  it('edit(msg, { forUser: null }) ALONE still trips NOTHING_TO_EDIT, before any round trip', async () => {
-    // `nothing_to_edit`'s sentence is unchanged by AMENDMENT-09, and the
-    // server refuses a lock-only patch for the same reason: `patch.Empty()`
-    // reads text/embeds/buttons and not the lock
-    // (`backend-go/internal/botapi/messages_mutate.go:450`). So the local
-    // precondition stays exactly where it was, byte-identical to the
-    // sentence, and identical to `sdk/python/aurival`'s (SDK-7). §12 step 16
-    // clears a lock by naming a part alongside it — the case pinned above.
+  it('edit(msg, { forUser: null }) ALONE is a real edit and reaches the wire', async () => {
+    // Seat ruling on AMENDMENT-09's open question: naming only the lock IS
+    // an edit, and L1 widens `patch.Empty()` to count `for_user`. So the
+    // local precondition counts four parts and this body goes out as exactly
+    // `{ for_user: null }` — §12 step 16 written the way a bot author would
+    // reach for it. Identical to `sdk/python/aurival`'s (SDK-7).
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'message', id: 'msg_1', chat: 'chat_1', text: 'kept' }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = Context.fromEvent(makeInvokedEvent(), http);
+    await expect(ctx.edit('msg_1', { forUser: null })).resolves.toBeDefined();
+    const req = requests[0];
+    if (req === undefined) throw new Error('expected one request');
+    expect(req.body).toEqual({ for_user: null });
+  });
+
+  it('edit(msg, { forUser: "usr_2" }) ALONE reaches the wire as a lock move', async () => {
+    const { url, server, requests } = await startServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'message', id: 'msg_1', chat: 'chat_1', text: 'kept' }));
+    });
+    openServers.push(server);
+    const http = new HttpClient(url, new FakeAuth() as unknown as Auth);
+    const ctx = Context.fromEvent(makeInvokedEvent(), http);
+    await ctx.edit('msg_1', { forUser: 'usr_2' });
+    const req = requests[0];
+    if (req === undefined) throw new Error('expected one request');
+    expect(req.body).toEqual({ for_user: 'usr_2' });
+  });
+
+  it('edit(msg, {}) naming none of the four parts still trips NOTHING_TO_EDIT', async () => {
     const http = new HttpClient('http://127.0.0.1:1', new FakeAuth() as unknown as Auth);
     const ctx = Context.fromEvent(makeInvokedEvent(), http);
-    await expect(ctx.edit('msg_1', { forUser: null })).rejects.toThrow(NOTHING_TO_EDIT);
+    await expect(ctx.edit('msg_1', {})).rejects.toThrow(NOTHING_TO_EDIT);
   });
 
   it('edit(msg, "words") — the string overload — OMITS for_user entirely (INHERIT)', async () => {

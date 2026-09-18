@@ -455,17 +455,30 @@ def test_context_invoked_as_exists_as_a_plain_string_attribute() -> None:
     assert isinstance(ctx.invoked_as, str)
 
 
-def test_edit_with_only_for_user_none_still_trips_nothing_to_edit() -> None:
-    """A lock-only PATCH is refused here, before any round trip, and stays
-    refused: `nothing_to_edit`'s sentence is unchanged by AMENDMENT-09 and
-    the server reads the same three parts — `handleEditMessage` answers
-    `CodeNothingToEdit` on `patch.Empty()`, which does not consider the lock
-    (`backend-go/internal/botapi/messages_mutate.go:450`, re-read at
-    origin/main f67c83f6c). Widening the precondition would turn a free local
-    refusal into a doomed round trip that answers the same thing.
-    AMENDMENT-09 §12 step 16 clears a lock by naming a part alongside it.
-    `sdk/js/src/events.ts`'s `partsAreEmpty` mirrors this exactly (SDK-7).
+async def test_edit_with_only_for_user_none_is_a_real_edit_and_reaches_the_wire() -> None:
+    """Seat ruling on AMENDMENT-09's open question: naming only the lock IS an
+    edit — clearing or moving it is a real change to the card — and L1 widens
+    `patch.Empty()` to count `for_user`. So the local precondition counts four
+    parts and this body goes out as exactly `{"for_user": null}`, which is
+    §12 step 16 written the way a bot author would reach for it.
+    `sdk/js/src/events.ts`'s `partsAreEmpty` mirrors this (SDK-7).
     """
+    cap = _Capture(body=_STORED)
+    async with Serve(_edit_app(cap)) as s:
+        await _context(s.client()).edit("msg_1", for_user=None)
+    assert cap.body == {"for_user": None}
+
+
+async def test_edit_with_only_a_for_user_id_reaches_the_wire_as_a_lock_move() -> None:
+    cap = _Capture(body=_STORED)
+    async with Serve(_edit_app(cap)) as s:
+        await _context(s.client()).edit("msg_1", for_user="usr_2")
+    assert cap.body == {"for_user": "usr_2"}
+
+
+def test_edit_naming_none_of_the_four_parts_still_trips_nothing_to_edit() -> None:
+    """The sentence is unchanged and so is the refusal it guards — only its
+    reach widened, from three parts to four."""
     event = Event(
         id="evt_1",
         type="command.invoked",
@@ -475,5 +488,5 @@ def test_edit_with_only_for_user_none_still_trips_nothing_to_edit() -> None:
     )
     ctx = BaseContext(event=event, http=None, chat=Chat(id="chat_1", type="direct", name=None))  # type: ignore[arg-type]
     with pytest.raises(ValueError) as caught:
-        asyncio.run(ctx.edit("msg_1", for_user=None))
+        asyncio.run(ctx.edit("msg_1"))
     assert str(caught.value) == caps.NOTHING_TO_EDIT

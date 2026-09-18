@@ -577,7 +577,19 @@ class BaseContext:
         the row, each button's own `Button(cooldown=)` still carries through
         to AMENDMENT-08's lookup table; the card level for this edit is
         `UNSET` (inherits the bot default), same as an untouched card would."""
-        if text is None and embeds is None and buttons is None:
+        # AMENDMENT-09, seat ruling: naming `for_user` and nothing else IS an
+        # edit — clearing or moving the lock is a real change to the card, and
+        # L1 widens `patch.Empty()` to count it. So the local precondition
+        # counts four parts, not three, and `ctx.edit(sent, for_user=None)`
+        # goes to the wire instead of being refused here. `OMITTED` still
+        # means "not named", so an edit naming none of the four is refused as
+        # before. `sdk/js/src/events.ts`'s `partsAreEmpty` mirrors this.
+        if (
+            text is None
+            and embeds is None
+            and buttons is None
+            and isinstance(for_user, Omitted)
+        ):
             raise ValueError(NOTHING_TO_EDIT)
         resolved_buttons = resolve_buttons(buttons) if buttons else []
         response = await self._http.edit_message(

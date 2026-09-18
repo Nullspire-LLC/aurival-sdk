@@ -437,27 +437,24 @@ function recordCardCooldown(
 }
 
 /**
- * True when none of `text`, `embeds` or `buttons` is present — nothing for
- * the server to do.
+ * True when none of the four parts is present — nothing for the server to do.
  *
- * `forUser` deliberately does NOT count. `nothing_to_edit`'s sentence is
- * `an edit needs text, embeds or buttons` and AMENDMENT-09 leaves it
- * byte-identical, so a body carrying only `for_user` is refused server-side
- * too: `handleEditMessage` answers `CodeNothingToEdit` on `patch.Empty()`,
- * which reads those three parts and not the lock
- * (`backend-go/internal/botapi/messages_mutate.go:450`, re-read at
- * origin/main f67c83f6c). Widening the local guard here would only turn a
- * refusal the caller gets for free into a doomed round trip that comes back
- * saying the same thing. Mirrors `sdk/python/aurival/events.py`'s
- * `BaseContext.edit` precondition exactly (SDK-7).
- *
- * §12 step 16 — "the bot edits with `for_user: null`" — is satisfied by
- * naming a part alongside the lock. Whether a lock-only edit should become
- * legal is L1's call on `nothing_to_edit`, not this SDK's.
+ * `forUser` counts, on the seat ruling that closed AMENDMENT-09's open
+ * question: naming only the lock IS an edit, because clearing or moving it
+ * is a real change to the card, and L1 widens `patch.Empty()` to count it.
+ * So `ctx.edit(sent, { forUser: null })` with nothing else named goes to the
+ * wire rather than being refused here, which is §12 step 16 written the way
+ * a bot author would reach for it. `undefined` still means "not named", so
+ * an edit naming none of the four is refused as before, with
+ * `nothing_to_edit`'s sentence unchanged. Mirrors
+ * `sdk/python/aurival/events.py`'s `BaseContext.edit` precondition (SDK-7).
  */
 function partsAreEmpty(parts: CardParts): boolean {
   return (
-    parts.text === undefined && parts.embeds === undefined && parts.buttons === undefined
+    parts.text === undefined &&
+    parts.embeds === undefined &&
+    parts.buttons === undefined &&
+    parts.forUser === undefined
   );
 }
 

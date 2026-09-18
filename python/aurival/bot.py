@@ -770,6 +770,20 @@ class Bot:
                 ms = max(1, math.ceil(retry_after * 1000))
                 try:
                     await self._http.ack_interaction(ctx.interaction, cooldown_retry_after_ms=ms)
+                    # The ack landed. Without this line a button cooldown is
+                    # invisible to the bot author: the SDK answers the press
+                    # itself, the handler never runs, and nothing is written
+                    # anywhere — so a cooldown firing and a press vanishing
+                    # look identical from the outside. INFO, not DEBUG,
+                    # because the swallowed-refusal lines below are the ones
+                    # a reader can ignore; this one is the cooldown working.
+                    self._log.info(
+                        "cooldown: acked press on %s/%s for %s, retry_after_ms=%d",
+                        ctx.message.id,
+                        ctx.button,
+                        ctx.user.id,
+                        ms,
+                    )
                 # AMENDMENT-08 §11 (D15): this ack is the SDK acting, not the
                 # developer, so a press that is already moot — spent,
                 # replaced, or the message is gone — is swallowed silently.

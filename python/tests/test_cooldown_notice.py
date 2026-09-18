@@ -8,6 +8,7 @@ itself; this file covers what `bot.py` does with a refusal.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import aiohttp
@@ -582,3 +583,54 @@ def test_bot_on_cooldown_exists_as_a_bound_method() -> None:
 def test_cooldown_command_notice_uses_name_and_n_placeholders() -> None:
     assert "{name}" in COOLDOWN_COMMAND_NOTICE
     assert "{n}" in COOLDOWN_COMMAND_NOTICE
+
+
+# --- the successful cooldown ack is visible in the log --------------------
+
+
+async def test_a_successful_cooldown_ack_logs_one_info_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The e2e lane found a button cooldown is otherwise invisible: the SDK
+    answers the press itself, the handler never runs, and nothing is written,
+    so a cooldown firing and a press vanishing look identical to a bot author.
+    One INFO line on the success path, naming the message, the button, the
+    presser and the window it sent.
+    """
+    http = _StubHttp()
+    bot = Bot(button_cooldown=Cooldown(1, 5.0, "user"))
+    bot._http = http  # type: ignore[assignment]
+
+    @bot.on("button.pressed")
+    async def on_press(ctx: Any) -> None:
+        return None
+
+    with caplog.at_level(logging.INFO, logger="aurival"):
+        await bot._dispatch(_button_event(event_id="evt_1", interaction="int_1"))
+        await bot._dispatch(_button_event(event_id="evt_2", interaction="int_2"))
+
+    lines = [r for r in caplog.records if r.message.startswith("cooldown: acked press")]
+    assert len(lines) == 1, "exactly one line, for the one refused press"
+    record = lines[0]
+    assert record.levelno == logging.INFO
+    rendered = record.getMessage()
+    assert "msg_1" in rendered and "go" in rendered and "usr_1" in rendered
+    assert "retry_after_ms=" in rendered
+
+
+async def test_a_swallowed_cooldown_ack_logs_no_info_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The swallowed refusals keep their debug lines and must NOT claim the
+    ack landed — nothing was acked."""
+    http = _StubHttp()
+    bot = Bot(button_cooldown=Cooldown(1, 5.0, "user"))
+    bot._http = http  # type: ignore[assignment]
+    http._ack_raises = [_err(ButtonAlreadyUsed, "button_already_used")]
+
+    with caplog.at_level(logging.DEBUG, logger="aurival"):
+        await bot._dispatch(_button_event(event_id="evt_1", interaction="int_1"))
+        await bot._dispatch(_button_event(event_id="evt_2", interaction="int_2"))
+
+    assert not [r for r in caplog.records if r.message.startswith("cooldown: acked press")]
+    assert [r for r in caplog.records if "swallowed" in r.getMessage()]
