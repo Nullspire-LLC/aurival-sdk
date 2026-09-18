@@ -453,6 +453,63 @@ and acking one a second time doesn't raise locally, the server 409s the request.
 The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
 [cookbook](https://bots.aurival.com/docs/cookbook).
 
+## Buttons only the caller can press
+
+By default nobody is locked: any member in the chat can press a card's buttons, exactly as
+before this existed. Pass `for_user=` to `reply`, `send`, `edit` or `ack` to lock the press to
+one member.
+
+```python
+await ctx.reply("Question 1 of 5", buttons=buttons, for_user=ctx.sender)
+```
+
+`for_user` takes a `User` (`ctx.sender` is one) or a bare `usr_…` id string. Either one
+serializes to the same id on the wire.
+
+Everyone still sees the card and its text. Only the press is gated: a non-caller's buttons
+render at `.56` opacity with no checkmark, are not tappable, and the app shows a `For {name}`
+hint under the row. A link button on a locked card stays pressable by anyone. It never
+round-trips to the server, so there is nothing for the lock to gate.
+
+A non-caller who presses anyway is refused by the server with a `403`, before anything is
+spent. `used` stays unset and the card is unchanged. That refusal never reaches your bot: a bot
+never presses a button, so there is no SDK exception for it.
+
+Omitting `for_user` on a `reply`/`edit`/`ack` that replaces a card **keeps the existing lock**.
+Passing `for_user=None` **clears** it, and the card opens to everyone. Passing a new id **moves**
+the lock to that member. This matters most on `ack`, where a quiz redraws its own card between
+questions and must not silently unlock itself by leaving `for_user` out.
+
+A caller-only quiz, start to finish:
+
+```python
+from aurival import Button, ButtonContext, Context
+
+@bot.command("quiz")
+async def quiz(ctx: Context) -> None:
+    await ctx.reply(
+        "Which planet is largest?",
+        buttons=[
+            Button("Mars", style="secondary"),
+            Button("Jupiter", style="secondary"),
+        ],
+        for_user=ctx.sender,
+    )
+
+@bot.on("button.pressed")
+async def answered(ctx: ButtonContext) -> None:
+    if ctx.button == "jupiter":
+        text = "Correct. Jupiter is about eleven Earths across."
+    else:
+        text = "Not quite. Jupiter is about eleven Earths across."
+    await ctx.ack(text, buttons=[])
+```
+
+`ButtonContext` carries no `for_user` field. The presser is always the locked user by
+construction: the server refuses everyone else before your handler ever runs, so there is
+nothing on the press for it to expose. If you need the lock on a card you are acking, you
+already have it: you set it on the send.
+
 ## Cooldowns
 
 A cooldown paces a command or a button. You attach it, the SDK keeps the bucket, and the wire
@@ -666,6 +723,41 @@ WARNING:aurival:command 'ping' is shadowed in chat chat_01j… by another bot's 
 
 Rename the command, or get the other bot out of that chat. Nothing else in the SDK reacts
 to it — a shadowed command in one chat is still live in every other.
+
+## Command aliases
+
+`aliases=` on `@bot.command` gives one command several spellings, all handled by the same
+function. `/roll` and `/r` fire the same handler, share the same cooldown bucket, and are one
+command everywhere the server or the app talks about it.
+
+```python
+from aurival import Context, Cooldown
+
+async def on_roll_cooldown(ctx: Context, retry_after: float) -> None:
+    await ctx.reply(f"easy, /{ctx.invoked_as} again in {retry_after:.0f}s")
+
+@bot.command("roll", "Roll dice", aliases=["r"], cooldown=Cooldown(1, 5.0), on_cooldown=on_roll_cooldown)
+async def roll(ctx: Context) -> None:
+    await ctx.reply(f"/{ctx.invoked_as} ran {ctx.command}, dice rolled")
+```
+
+`ctx.command` is always the canonical name, `"roll"`, whichever spelling fired the handler.
+`ctx.invoked_as` is the token the human actually typed, lowercased: `"roll"` or `"r"`. They are
+equal on a canonical call. Code that checks `ctx.command == "roll"` keeps working no matter which
+spelling reached it.
+
+At most three aliases per command. A fourth raises locally, before anything is synced. It is the
+same validation path as a bad command name: lowercase letters, digits, hyphens and underscores
+only, and none of the reserved names (`help`, `report`, `block`, `mute`, `kick`, `ban`, `admin`,
+`staff`, `support`, `aurival`).
+
+Cooldowns key on the canonical command, not on what was typed: `/roll` and `/r` share one
+bucket, not two. The cooldown notice echoes the typed token, though: hit the limit through `/r`
+and you get `Slow down. Try /r again in 3 s.`, never `/roll`.
+
+In the app, the command picker lists a command's aliases as a muted secondary line under its
+row: `also /r`. Picking a row that matched by alias fills that alias, not the canonical
+spelling: typing `/r` and picking the row inserts `/r `, not `/roll `.
 
 ## Environment
 
