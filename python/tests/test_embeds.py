@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from aurival import http
 from aurival.caps import (
     CAP_AUTHOR_URL_WITHOUT_NAME,
     CAP_BAD_BUTTON_STYLE,
@@ -49,7 +50,7 @@ from aurival.caps import (
     MAX_LINK_URL_RUNES,
     MAX_TITLE_LENGTH,
 )
-from aurival import http
+from aurival.cooldown import CooldownTable
 from aurival.embeds import Button, ButtonUsed, Embed, serialise_buttons, serialise_embeds
 from aurival.events import ButtonContext, Chat, Context, Event, User, _message_from_wire
 
@@ -78,6 +79,9 @@ class _RecordingHttp:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.acked: list[str] = []
+        # AMENDMENT-08 §3: `send()`/`reply()`/`edit()`/`ack()` record into
+        # this whenever they carry buttons, so the stub needs a real table.
+        self.cooldowns = CooldownTable()
 
     async def request(self, method: str, path: str, **kwargs: Any) -> dict:
         self.sent.append({"method": method, "path": path, **kwargs})

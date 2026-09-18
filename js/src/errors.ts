@@ -113,6 +113,20 @@ export class TooManyProblems extends InvalidRequestError {}
 export class NothingToEdit extends InvalidRequestError {}
 
 /**
+ * `cooldown_with_body` (AMENDMENT-08 §8): a `cooldown` ack body also carried
+ * `text`, `embeds` or `buttons`. SHIPS AHEAD of the Go row for the same
+ * reason `NothingToEdit` did — L1 has not landed `errors_v1.go`'s entry yet.
+ */
+export class CooldownWithBody extends InvalidRequestError {}
+
+/**
+ * `cooldown_retry_after_invalid` (AMENDMENT-08 §8): a `cooldown`
+ * ack's `retry_after_ms` was not a whole number of milliseconds between 1
+ * and 60000. SHIPS AHEAD of the Go row, same authority as `CooldownWithBody`.
+ */
+export class CooldownRetryAfterInvalid extends InvalidRequestError {}
+
+/**
  * `reaction_emoji_too_long` — the emoji argument to `react()`/`unreact()`
  * exceeded the server's >32-byte length clamp (AMENDMENT-04 A-2). This is a
  * size limit, not an allowlist check — there is no disallowed-emoji list to
@@ -300,6 +314,8 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   ack_unknown_event: AckUnknownEvent,
   too_many_problems: TooManyProblems,
   nothing_to_edit: NothingToEdit,
+  cooldown_with_body: CooldownWithBody,
+  cooldown_retry_after_invalid: CooldownRetryAfterInvalid,
   reaction_emoji_too_long: ReactionEmojiTooLong,
   mention_not_member: MentionNotMember,
   mention_token_missing: MentionTokenMissing,

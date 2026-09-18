@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from . import errors
+from .cooldown import CooldownTable
 
 if TYPE_CHECKING:
     from .auth import Auth
@@ -151,6 +152,12 @@ class HttpClient:
         self._logger = logger or _log
         # Injectable so a retry/backoff test never actually waits.
         self._sleep = asyncio.sleep
+        # AMENDMENT-08 §3: the process-memory table `send()`/`reply()`/
+        # `edit()`/`ack()` record card/button cooldowns into, so a later
+        # `button.pressed` event (ids only) can resolve back to what was
+        # attached. One table per `HttpClient`, which is one per `Bot` run —
+        # it survives a socket reconnect, since it isn't connection state.
+        self.cooldowns = CooldownTable()
 
     async def request(
         self,
@@ -338,13 +345,24 @@ class HttpClient:
         *,
         embeds: list[dict[str, object]] | Omitted | None = OMITTED,
         buttons: list[dict[str, object]] | Omitted | None = OMITTED,
+        cooldown_retry_after_ms: int | None = None,
     ) -> dict:
         """`POST /v1/interactions/{interaction}/ack`, optionally carrying the
         replacement card (AMENDMENT-07 §3). With no parts at all the body is
         `None`, not `{}`, so a bare ack is byte-identical on the wire to the
         one 0.5.0 sent: `request` passes `json=body` straight to aiohttp, and
-        `json=None` writes no entity body and no content-type."""
-        body = _card_body(text, embeds, buttons)
+        `json=None` writes no entity body and no content-type.
+
+        `cooldown_retry_after_ms` (AMENDMENT-08 §5.1) is the SDK's own
+        automatic cooldown ack, never a developer-facing parameter —
+        `ButtonContext.ack()` doesn't expose it. Mutually exclusive with
+        `text`/`embeds`/`buttons` on the wire (`cooldown_with_body`); the SDK
+        enforces that by construction, only ever calling this with one or the
+        other, never both."""
+        if cooldown_retry_after_ms is not None:
+            body: dict[str, object] = {"cooldown": {"retry_after_ms": cooldown_retry_after_ms}}
+        else:
+            body = _card_body(text, embeds, buttons)
         return await self.request(
             "POST",
             f"/v1/interactions/{interaction}/ack",

@@ -453,6 +453,96 @@ and acking one a second time doesn't raise locally, the server 409s the request.
 The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
 [cookbook](https://bots.aurival.com/docs/cookbook).
 
+## Cooldowns
+
+A cooldown paces a command or a button. You attach it, the SDK keeps the bucket, and the wire
+never carries it — the server does not know one exists.
+
+```python
+from aurival import Bot, Cooldown, Context
+
+bot = Bot()                                   # button_cooldown=Cooldown(1, 2.0) already
+
+@bot.command("roll", cooldown=Cooldown(1, 5.0))
+async def roll(ctx: Context) -> None: ...
+
+@bot.command("leaderboard", cooldown=Cooldown(3, 60.0, "chat"))
+async def leaderboard(ctx: Context) -> None: ...
+```
+
+`per` is **seconds**, the same unit `AurivalAPIError.retry_after` already uses, so a number you
+catch and a number you write mean the same thing.
+
+Three buckets, and each one says who shares the limit:
+
+| bucket | key | reads as |
+|---|---|---|
+| `user` (the default) | the invoking or pressing user | each person gets one every N seconds |
+| `chat` | the conversation | this chat gets one every N seconds, whoever asks |
+| `global` | nothing | this bot answers one every N seconds, everywhere |
+
+A command that is refused never reaches your handler, and a refusal spends nothing — the token
+is taken only when the call passes.
+
+### What the member sees
+
+One plain reply per bucket per window, then silence for the rest of it. Somebody who types
+`/roll` eight times in five seconds gets one sentence, not eight:
+
+```
+Slow down. Try /roll again in 3 s.
+```
+
+Replace it, or suppress it, with a hook. A registered hook owns the whole response: the SDK
+sends nothing and the hook either replies or stays quiet. There is no return value to get right.
+
+```python
+@bot.on_cooldown                       # bot-level: every command without its own hook
+async def cooling(ctx: Context, retry_after: float) -> None:
+    await ctx.reply(f"easy, {retry_after:.0f}s")
+
+async def roll_cooling(ctx: Context, retry_after: float) -> None: ...
+
+@bot.command("roll", cooldown=Cooldown(1, 5.0), on_cooldown=roll_cooling)
+async def roll(ctx: Context) -> None: ...   # the per-command hook wins
+```
+
+The hook is called once per bucket per window too, so replacing the sentence does not
+re-introduce the spam it existed to stop.
+
+### Buttons already have one
+
+Every bot ships with `Cooldown(1, 2.0, "user")` on its buttons, without asking: one press every
+two seconds per person, one bucket per person per bot. A press inside the window is answered
+rather than handled — the presser's pending ink clears and their device shows a toast — and the
+button stays live, because a cooldown is a wait, not a spend.
+
+Override it where it belongs, and precedence is button, then card, then the bot default:
+
+```python
+bot = Bot(button_cooldown=Cooldown(1, 5.0))          # this bot's buttons
+await ctx.reply(buttons=[...], button_cooldown=None) # this card's buttons, off
+Button("Paint", cooldown=None)                       # this one button, off
+```
+
+A per-card or per-button cooldown gets its own buckets, keyed on the message, the button id and
+the bucket subject — button ids are unique within a message and nowhere else, so two cards that
+both call a button `roll` never share a limit. `None` disables at any level.
+
+A button cooldown is at most 60 seconds and is refused where you write it, not later inside an
+ack you cannot see. Command cooldowns have no cap: `Cooldown(1, 3600.0)` on a command is a
+legitimate once an hour.
+
+Link buttons are outside all of this — a link opens on the device and never round-trips, so it
+cannot carry a cooldown and `Button.link` has no `cooldown` argument.
+
+### The caveat, said plainly
+
+**Buckets are process memory.** They reset on restart, and they are not shared between
+instances: a bot running two processes has two independent buckets, and a deploy clears every
+bucket it had. Cooldowns pace a conversation. They are not a quota, and they are not the abuse
+bound — the server keeps its own floor underneath them.
+
 ## Upgrading from 0.3.x
 
 `Embed`, `Button` and `ButtonContext` are new in 0.4.0. Nothing about them is required: `reply`
@@ -545,6 +635,24 @@ a press:
 await ctx.edit(sent, embeds=[Embed(title="Starting in 3…")])
 await ctx.edit(sent, buttons=[])   # the row is gone, the plate stays
 ```
+
+## Upgrading from 0.6.x
+
+0.7.0 adds cooldowns and takes nothing away. `Cooldown` is a new export, `@bot.command` gained
+`cooldown=` and `on_cooldown=`, `Bot` gained `button_cooldown=`, `reply`/`send` gained
+`button_cooldown=`, and `Button` gained `cooldown=`. Every one of them has a default that keeps
+0.6.0 behaviour, with **one exception you should know about**: buttons now carry
+`Cooldown(1, 2.0, "user")` by default, so a member cannot press the same bot's buttons faster
+than once every two seconds. That is deliberate and it is on by default. If your bot's buttons
+are something a member is meant to mash, turn it off explicitly:
+
+```python
+bot = Bot(button_cooldown=None)
+```
+
+Two new error classes ship with it, `CooldownWithBody` and `CooldownRetryAfterInvalid`, both
+`InvalidRequestError`. You will not normally see either: the SDK builds the cooldown ack itself
+and refuses an out-of-range button cooldown where you write it.
 
 ## Shadowed commands
 

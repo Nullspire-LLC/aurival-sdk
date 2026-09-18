@@ -78,3 +78,36 @@ export const EMPTY_MESSAGE = 'a message needs text, embeds or buttons';
  * and this file.
  */
 export const NOTHING_TO_EDIT = 'an edit needs text, embeds or buttons';
+
+/**
+ * AMENDMENT-08 §4: the command-cooldown notice, sent through `ctx.reply`
+ * once per bucket per window. `{name}` is the command as the developer
+ * registered it; `{n}` is `Math.max(1, Math.ceil(retryAfterSeconds))`
+ * (`cooldown.ts`'s `roundSeconds`) — the SAME rounding rule the button
+ * toast's `{n}` uses (§5.4), stated once there. Lives byte-identically in
+ * `sdk/python/aurival/caps.py` and the docs page; never a Go template, since
+ * the server has no part in a command cooldown.
+ */
+export const COMMAND_COOLDOWN_NOTICE_TEMPLATE = 'Slow down. Try /{name} again in {n} s.';
+
+/** Renders {@link COMMAND_COOLDOWN_NOTICE_TEMPLATE} for one refusal. */
+export function commandCooldownNotice(name: string, n: number): string {
+  return COMMAND_COOLDOWN_NOTICE_TEMPLATE.replace('{name}', name).replace('{n}', String(n));
+}
+
+/**
+ * AMENDMENT-08 §5.1/§8's two new ack refusals: `cooldown` mixed with a
+ * `text`/`embeds`/`buttons` body, and a `retry_after_ms` outside
+ * `[MIN_COOLDOWN_RETRY_AFTER_MS, MAX_COOLDOWN_RETRY_AFTER_MS]`. These DO
+ * have a Go twin (`errors_v1.go`'s `CodeCooldownWithBody` /
+ * `CodeCooldownRetryAfterInvalid`, §8's table) — unlike `cooldown.ts`'s four
+ * attachment-time sentences, which never reach the wire and so are never
+ * Go's to send back. L1 has not landed `errors_v1.go`'s rows yet (verified
+ * empty on `origin/main`); these ship ahead on §8's authority, following the
+ * `NOTHING_TO_EDIT` precedent above.
+ */
+export const MIN_COOLDOWN_RETRY_AFTER_MS = 1;
+export const MAX_COOLDOWN_RETRY_AFTER_MS = 60000;
+
+export const CAP_COOLDOWN_WITH_BODY = 'a cooldown ack carries no text, embeds or buttons';
+export const CAP_COOLDOWN_RETRY_AFTER_INVALID = `a cooldown retry_after_ms is a whole number of milliseconds between ${MIN_COOLDOWN_RETRY_AFTER_MS} and ${MAX_COOLDOWN_RETRY_AFTER_MS}`;

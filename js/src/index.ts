@@ -43,6 +43,8 @@ export {
   ButtonMissingField,
   ButtonsWithoutMessage,
   CODE_CLASSES,
+  CooldownRetryAfterInvalid,
+  CooldownWithBody,
   DOC_URL_PREFIX,
   DuplicateButtonID,
   EmbedDescriptionTooLong,
@@ -123,6 +125,7 @@ export type {
 export { Button, Embed } from './embeds.js';
 export type { ButtonUsed } from './embeds.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
+export { Cooldown } from './cooldown.js';
 
 /** The package version. Pinned to `package.json` by test/index.test.ts. */
-export const version = '0.6.0';
+export const version = '0.7.0';

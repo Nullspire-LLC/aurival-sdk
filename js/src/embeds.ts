@@ -49,6 +49,8 @@ import {
   MAX_LINK_URL_RUNES,
   MAX_TITLE_LENGTH,
 } from './caps.js';
+import { CAP_LINK_BUTTON_COOLDOWN, Cooldown, normalizeCooldownOption } from './cooldown.js';
+import type { CooldownOption } from './cooldown.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -454,6 +456,16 @@ export interface ButtonInit {
   style?: string;
   emoji?: string;
   url?: string;
+  /**
+   * AMENDMENT-08 §3: this button's own cooldown, overriding the card-level
+   * and bot-default one for this button only (precedence button > card >
+   * bot). `undefined` (the default) inherits; `null` disables the default
+   * for this one button; a `Cooldown` or a plain `{ rate, per, bucket? }`
+   * literal attaches one. Refused at construction — before this button ever
+   * reaches the wire — if `per` exceeds 60s, or if this is a `link` button
+   * (a link press never round-trips, so it can never carry a cooldown).
+   */
+  cooldown?: CooldownOption;
 }
 
 function slugify(label: string): string {
@@ -484,6 +496,21 @@ function validateButtonShape(button: Button): void {
   // The emoji never counts toward the label cap (§3): it is its own field,
   // and folding it in would make one cap mean two things.
   if (button.emoji !== undefined) requireEmoji(button.emoji);
+  // AMENDMENT-08 §3/§7: a link button never round-trips as `button.pressed`
+  // (`press.go:96-107`), so a cooldown on one can never do anything. `null`
+  // (explicitly "no cooldown") is allowed through — it asserts nothing this
+  // button cannot honour — but attaching a real one is refused here, at
+  // construction, rather than silently discarded.
+  if (button.cooldown !== undefined) {
+    if (button.style === 'link' && button.cooldown !== null) {
+      throw new Error(CAP_LINK_BUTTON_COOLDOWN);
+    }
+    // `button.cooldown` is not `undefined` here (the outer guard), so
+    // `normalizeCooldownOption` cannot hand back `undefined` either.
+    button.cooldown = normalizeCooldownOption(button.cooldown, { boundToButton: true }) as
+      | Cooldown
+      | null;
+  }
 }
 
 /** `new Button({ label: 'Pacific' })` — `id` defaults to a slug of `label`, `style` defaults to `'primary'`. */
@@ -493,6 +520,15 @@ export class Button {
   style: string;
   emoji?: string;
   url?: string;
+  /**
+   * This button's own cooldown (AMENDMENT-08 §3), normalized to a real
+   * `Cooldown` by `validateButtonShape` (a plain literal in, a `Cooldown`
+   * out — `null` passes through unchanged). Absent entirely when the
+   * developer never set one, which reads as "inherit" at resolution time.
+   * Never serialized: `toJSON()` does not carry it, because a cooldown is
+   * SDK-side state that never reaches the wire (§2).
+   */
+  cooldown?: Cooldown | null;
 
   constructor(init: ButtonInit) {
     this.label = init.label;
@@ -500,6 +536,11 @@ export class Button {
     this.id = init.id ?? slugify(init.label);
     if (init.emoji !== undefined) this.emoji = init.emoji;
     if (init.url !== undefined) this.url = init.url;
+    // Raw (possibly a literal, not yet a `Cooldown`) until `validateButtonShape`
+    // normalizes it below — the field's public type is its POST-validation
+    // shape, matching every other builder field this constructor validates
+    // through the same call.
+    if (init.cooldown !== undefined) this.cooldown = init.cooldown as unknown as Cooldown | null;
     validateButtonShape(this);
   }
 
@@ -538,6 +579,15 @@ export class Button {
     button.id = id ?? slugify(label);
     if (emoji !== undefined) button.emoji = emoji;
     if (url !== undefined) button.url = url;
+    // Never present on a real wire button (cooldowns never reach the wire,
+    // §2) — this only matters for the OTHER caller of `fromJSON`,
+    // `serialiseButtonsWithCooldowns` decoding a plain-object `ButtonLike` a
+    // developer passed straight to `send`/`reply`/`edit`/`ack`. Carried
+    // through raw (possibly still a literal); `validateButtonShape`
+    // normalizes it, exactly as it does for a real `new Button(...)`.
+    if ('cooldown' in record) {
+      button.cooldown = record['cooldown'] as unknown as Cooldown | null;
+    }
     return button;
   }
 }
@@ -594,6 +644,42 @@ export function serialiseEmbeds(
   return normalised.map((embed) => embed.toJSON());
 }
 
+/** `serialiseButtonsWithCooldowns`'s return shape: the wire JSON, plus every button's cooldown (only the buttons that carried one — inherited buttons are simply absent from the map). */
+export interface SerialisedButtons {
+  json: Record<string, unknown>[];
+  /** button id -> its own `Cooldown` (`null` means explicitly disabled). A button not in this map inherits from the card, then the bot default (§3). */
+  cooldowns: ReadonlyMap<string, Cooldown | null>;
+}
+
+/**
+ * Validates and serialises the `buttons` a caller passed to
+ * `send`/`reply`/`edit`/`ack`, exactly as `serialiseButtons` does, and ALSO
+ * returns each button's own resolved cooldown (AMENDMENT-08 §3) — the
+ * per-button overrides `bot.ts`'s card lookup table (`cooldown.ts`'s
+ * `CardCooldownTable`) needs to resolve a later press, since the
+ * `button.pressed` event that press produces carries only ids, never the
+ * `Button` objects this call was given. One validation pass; `serialiseButtons`
+ * is a thin wrapper around this for callers that only want the wire shape.
+ */
+export function serialiseButtonsWithCooldowns(
+  buttons: ReadonlyArray<ButtonLike> | undefined,
+): SerialisedButtons {
+  if (buttons === undefined || buttons.length === 0) return { json: [], cooldowns: new Map() };
+  if (buttons.length > MAX_BUTTONS) throw new Error(CAP_TOO_MANY_BUTTONS);
+  const normalised = buttons.map((entry) =>
+    entry instanceof Button ? entry : Button.fromJSON(entry),
+  );
+  for (const button of normalised) validateButtonShape(button);
+  const seen = new Set<string>();
+  const cooldowns = new Map<string, Cooldown | null>();
+  for (const button of normalised) {
+    if (seen.has(button.id)) throw new Error(CAP_DUPLICATE_BUTTON_ID);
+    seen.add(button.id);
+    if (button.cooldown !== undefined) cooldowns.set(button.id, button.cooldown);
+  }
+  return { json: normalised.map((button) => button.toJSON()), cooldowns };
+}
+
 /**
  * Validates and serialises the `buttons` a caller passed to `send`/`reply`.
  * `[]` when `buttons` is absent or empty, so the caller omits the key.
@@ -601,16 +687,5 @@ export function serialiseEmbeds(
 export function serialiseButtons(
   buttons: ReadonlyArray<ButtonLike> | undefined,
 ): Record<string, unknown>[] {
-  if (buttons === undefined || buttons.length === 0) return [];
-  if (buttons.length > MAX_BUTTONS) throw new Error(CAP_TOO_MANY_BUTTONS);
-  const normalised = buttons.map((entry) =>
-    entry instanceof Button ? entry : Button.fromJSON(entry),
-  );
-  for (const button of normalised) validateButtonShape(button);
-  const seen = new Set<string>();
-  for (const button of normalised) {
-    if (seen.has(button.id)) throw new Error(CAP_DUPLICATE_BUTTON_ID);
-    seen.add(button.id);
-  }
-  return normalised.map((button) => button.toJSON());
+  return serialiseButtonsWithCooldowns(buttons).json;
 }

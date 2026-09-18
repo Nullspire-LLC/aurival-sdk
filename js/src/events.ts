@@ -18,11 +18,13 @@ import {
   buttonUsedFromWire,
   buttonsFromWire,
   embedsFromWire,
-  serialiseButtons,
+  serialiseButtonsWithCooldowns,
   serialiseEmbeds,
 } from './embeds.js';
 import type { Button, ButtonLike, ButtonUsed, Embed, EmbedLike } from './embeds.js';
 import type { CardParts, HttpClient } from './http.js';
+import { normalizeCooldownOption } from './cooldown.js';
+import type { Cooldown, CooldownOption } from './cooldown.js';
 
 export interface User {
   id: string;
@@ -227,6 +229,14 @@ function mentionEntry(m: MentionLike): { user: string } {
 export interface ReplyOptions {
   embeds?: ReadonlyArray<EmbedLike>;
   buttons?: ReadonlyArray<ButtonLike>;
+  /**
+   * AMENDMENT-08 §3: this card's own button cooldown, overriding the bot
+   * default for every button on it (a per-button `cooldown` still wins over
+   * this). `undefined` (the default) inherits the bot's; `null` disables it
+   * for this card; a `Cooldown` or a plain `{ rate, per, bucket? }` literal
+   * attaches one. Refused, before the round trip, if `per` exceeds 60s.
+   */
+  buttonCooldown?: CooldownOption;
 }
 
 /** `send()` takes the same, plus who the `@handle` tokens in `text` point at. */
@@ -297,13 +307,19 @@ function embedsPart(
   return serialiseEmbeds(embeds);
 }
 
-/** `embedsPart`'s twin for buttons — same three states, same reason. */
+/**
+ * `embedsPart`'s twin for buttons — same three states, same reason — plus
+ * (AMENDMENT-08 §3) every button's own cooldown, needed only when this call
+ * is actually replacing the button row: `undefined`/`null`/`[]` all carry an
+ * EMPTY cooldown map, since there is nothing to record a per-button override
+ * against.
+ */
 function buttonsPart(
   buttons: ReadonlyArray<ButtonLike> | null | undefined,
-): Record<string, unknown>[] | null | undefined {
-  if (buttons === undefined) return undefined;
-  if (buttons === null || buttons.length === 0) return null;
-  return serialiseButtons(buttons);
+): { json: Record<string, unknown>[] | null | undefined; cooldowns: ReadonlyMap<string, Cooldown | null> } {
+  if (buttons === undefined) return { json: undefined, cooldowns: new Map() };
+  if (buttons === null || buttons.length === 0) return { json: null, cooldowns: new Map() };
+  return serialiseButtonsWithCooldowns(buttons);
 }
 
 /**
@@ -311,12 +327,44 @@ function buttonsPart(
  * Validation of a non-empty array happens here, so a bad embed throws before
  * the round trip exactly as it does on `send`.
  */
-function cardParts(init: EditInit): CardParts {
+function cardParts(
+  init: EditInit,
+  buttonsJson: Record<string, unknown>[] | null | undefined,
+): CardParts {
   return {
     text: init.text,
     embeds: embedsPart(init.embeds),
-    buttons: buttonsPart(init.buttons),
+    buttons: buttonsJson,
   };
+}
+
+/**
+ * Validates and normalizes a card-level `buttonCooldown` option — ATTACHMENT
+ * time, same as a per-button cooldown (`serialiseButtonsWithCooldowns`
+ * already validates those). Callers run this BEFORE the network call, so a
+ * too-long `per` throws before anything is sent, never after.
+ */
+function normalizeCardCooldown(option: CooldownOption | undefined): Cooldown | null | undefined {
+  return normalizeCooldownOption(option, { boundToButton: true });
+}
+
+/**
+ * AMENDMENT-08 §3's "card lookup on press": records the card-level cooldown
+ * and every per-button override for one outgoing message id, so a later
+ * `button.pressed` event — which carries only ids, never the `Button`
+ * objects this call was given — can resolve precedence (`bot.ts`'s
+ * `#handleButtonPress`). A no-op when there is nothing to override: an
+ * absent card-level cooldown and no per-button ones both mean "inherit",
+ * which is already what a lookup MISS resolves to. `cardCooldown` is
+ * already normalized (`normalizeCardCooldown`, run before the network call).
+ */
+function recordCardCooldown(
+  http: HttpClient,
+  messageId: string,
+  cardCooldown: Cooldown | null | undefined,
+  buttonCooldowns: ReadonlyMap<string, Cooldown | null>,
+): void {
+  http.cardCooldowns.record(messageId, { cardCooldown, byButtonId: buttonCooldowns });
 }
 
 /** True when none of the three parts is present — nothing for the server to do. */
@@ -430,7 +478,11 @@ export class BaseContext {
   async reply(textOrOptions: string | ReplyOptions = '', maybeOptions?: ReplyOptions) {
     const [text, options] = splitTextAndOptions(textOrOptions, maybeOptions);
     const embeds = serialiseEmbeds(options.embeds);
-    const buttons = serialiseButtons(options.buttons);
+    const { json: buttons, cooldowns } = serialiseButtonsWithCooldowns(options.buttons);
+    // AMENDMENT-08: attachment-time bound check runs before the network
+    // call, same as the per-button cooldowns serialiseButtonsWithCooldowns
+    // already validated above.
+    const cardCooldown = normalizeCardCooldown(options.buttonCooldown);
     requireSomethingToSay(text, embeds, buttons);
     const sent = await this.#http.sendMessage(
       this.chat.id,
@@ -441,7 +493,11 @@ export class BaseContext {
       embeds,
       buttons,
     );
-    return messageFromWire(sent);
+    const message = messageFromWire(sent);
+    if (buttons.length > 0) {
+      recordCardCooldown(this.#http, message.id, cardCooldown, cooldowns);
+    }
+    return message;
   }
 
   /**
@@ -461,7 +517,8 @@ export class BaseContext {
     const [text, options] = splitTextAndOptions(textOrOptions, maybeOptions);
     const mentions = options.mentions?.map(mentionEntry);
     const embeds = serialiseEmbeds(options.embeds);
-    const buttons = serialiseButtons(options.buttons);
+    const { json: buttons, cooldowns } = serialiseButtonsWithCooldowns(options.buttons);
+    const cardCooldown = normalizeCardCooldown(options.buttonCooldown);
     requireSomethingToSay(text, embeds, buttons);
     const sent = await this.#http.sendMessage(
       chatId(chat),
@@ -472,7 +529,11 @@ export class BaseContext {
       embeds,
       buttons,
     );
-    return messageFromWire(sent);
+    const message = messageFromWire(sent);
+    if (buttons.length > 0) {
+      recordCardCooldown(this.#http, message.id, cardCooldown, cooldowns);
+    }
+    return message;
   }
 
   /**
@@ -518,14 +579,31 @@ export class BaseContext {
    * `embeds`/`buttons` CLEARS it, and the server validates the merged card, so
    * `text: ''` is legal as long as something survives. An edit carrying none of
    * the three is refused here, before the round trip.
+   *
+   * No card-level `buttonCooldown` door here: AMENDMENT-08 §3 names exactly
+   * one, `send(..., buttonCooldown)` (mirrored on `reply()`). A per-button
+   * `new Button({ cooldown })` in a replacement row is still honoured — the
+   * card table entry is recorded fresh with its card level left unset
+   * ("inherit"), same as `reply()`/`send()` when no card-level cooldown was
+   * passed either.
    */
   async edit(message: Message | string, text: string): Promise<Message>;
   async edit(message: Message | string, init?: EditInit): Promise<Message>;
   async edit(message: Message | string, textOrInit?: string | EditInit): Promise<Message> {
     const init: EditInit = typeof textOrInit === 'string' ? { text: textOrInit } : (textOrInit ?? {});
-    const parts = cardParts(init);
+    const resolvedButtons = buttonsPart(init.buttons);
+    const parts = cardParts(init, resolvedButtons.json);
     if (partsAreEmpty(parts)) throw new Error(NOTHING_TO_EDIT);
-    return messageFromWire(await this.#http.editMessage(messageId(message), parts));
+    const updated = messageFromWire(await this.#http.editMessage(messageId(message), parts));
+    // AMENDMENT-08 §3: "carry the same recording through ack()/edit() when
+    // they replace buttons" — only when this call actually replaces the row
+    // with a non-empty array; `undefined` (kept) and `null`/`[]` (cleared)
+    // have nothing fresh to record. The card level is always `undefined`
+    // here (no door to set it on this call) — see the doc comment above.
+    if (Array.isArray(resolvedButtons.json) && resolvedButtons.json.length > 0) {
+      recordCardCooldown(this.#http, updated.id, undefined, resolvedButtons.cooldowns);
+    }
+    return updated;
   }
 
   /** Delete one of this bot's own messages. Someone else's is `MessageNotYours`. */
@@ -771,13 +849,28 @@ export class ButtonContext extends BaseContext {
    * it starts unused, and reusing the old ids is safe (§3). An ack never marks
    * the message edited. Unlike `edit()` there is no client-side emptiness
    * precondition: an ack with nothing in it is the flip, which is legal.
+   *
+   * No card-level `buttonCooldown` door here either, for the same reason as
+   * `edit()`: AMENDMENT-08 §3 names exactly one, `send(..., buttonCooldown)`.
+   * A per-button `new Button({ cooldown })` in a replacement row is still
+   * honoured — the card table entry is recorded fresh with its card level
+   * left unset ("inherit").
    */
   async ack(init?: EditInit): Promise<void> {
     if (init === undefined) {
       await this.#http.ackInteraction(this.interaction);
       return;
     }
-    await this.#http.ackInteraction(this.interaction, cardParts(init));
+    const resolvedButtons = buttonsPart(init.buttons);
+    await this.#http.ackInteraction(this.interaction, cardParts(init, resolvedButtons.json));
+    // AMENDMENT-08 §3: "carry the same recording through ack()/edit() when
+    // they replace buttons" — the ack always concerns the button's own
+    // message (`this.message`), so that id is the card table key here, same
+    // as `updated.id` is for `edit()`. The card level is always `undefined`
+    // here (no door to set it on this call) — see the doc comment above.
+    if (Array.isArray(resolvedButtons.json) && resolvedButtons.json.length > 0) {
+      recordCardCooldown(this.#http, this.message.id, undefined, resolvedButtons.cooldowns);
+    }
   }
 
   static fromEvent(event: Event, http: HttpClient): ButtonContext {

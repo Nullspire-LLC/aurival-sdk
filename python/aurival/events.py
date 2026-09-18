@@ -22,12 +22,14 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 from .caps import EMPTY_MESSAGE, NOTHING_TO_EDIT
+from .cooldown import UNSET, Cooldown, CooldownSpec, validate_button_cooldown
 from .embeds import (
     Button,
     ButtonLike,
     ButtonUsed,
     Embed,
     EmbedLike,
+    resolve_buttons,
     serialise_buttons,
     serialise_embeds,
 )
@@ -269,6 +271,37 @@ def _buttons_part(buttons: list[ButtonLike] | None) -> list[dict[str, object]] |
     return serialise_buttons(buttons)
 
 
+def _resolve_and_validate_buttons(
+    buttons: list[ButtonLike] | None, button_cooldown: CooldownSpec
+) -> tuple[list[Button], list[dict[str, object]]]:
+    """Shared by `reply`/`send`: resolve builders/dicts to `Button` objects —
+    AMENDMENT-08's cooldown table needs each one's `.id`/`.cooldown`, not
+    only the serialised dict `serialise_buttons` returns — and validate a
+    card-level `button_cooldown`'s 60-second bound at attachment time, before
+    the round trip (AMENDMENT-08 §5.1 D12)."""
+    if isinstance(button_cooldown, Cooldown):
+        validate_button_cooldown(button_cooldown)
+    resolved = resolve_buttons(buttons)
+    return resolved, [b.to_dict() for b in resolved]
+
+
+def _record_button_cooldowns(
+    http: HttpClient,
+    message_id: str,
+    button_cooldown: CooldownSpec,
+    resolved_buttons: list[Button],
+) -> None:
+    """AMENDMENT-08 §3's card lookup table: a `button.pressed` event carries
+    only ids, so `send()`/`reply()`/`edit()`/`ack()` record what was attached
+    here, keyed by the message id, for the press dispatch to resolve
+    precedence from later. Only worth recording when there are buttons for a
+    press to ever resolve against."""
+    if resolved_buttons:
+        http.cooldowns.record(
+            message_id, button_cooldown, {b.id: b.cooldown for b in resolved_buttons}
+        )
+
+
 def _ref_id(x: object) -> str:
     """Accepts a bare id string or anything with a plain `.id` attribute
     (`Message`, `Chat`) — the shape every action method below takes for its
@@ -339,6 +372,7 @@ class BaseContext:
         *,
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
+        button_cooldown: CooldownSpec = UNSET,
     ) -> Message:
         """Send `text` to this chat, quoting the message the event was about
         when it carried one (BA-R27, reversing SDK-30) — `ctx.reply()` in a
@@ -348,6 +382,12 @@ class BaseContext:
         Pass `embeds`/`buttons` to attach a card — `text` is optional when
         either is present, so `ctx.reply(embeds=[card])` is an embed-only
         reply. Returns the `Message` the server stored.
+
+        `button_cooldown` (AMENDMENT-08 §3) sets the cooldown every button on
+        this card inherits, unless a button names its own — tri-state: leave
+        it unset to inherit the bot's default, pass `None` to disable it for
+        this card, or pass a `Cooldown`. Bounded to 60 seconds, validated
+        before the round trip.
 
         A fresh `Idempotency-Key` per call, reused across that call's retries
         by `HttpClient.request` itself.
@@ -364,7 +404,9 @@ class BaseContext:
         serialised_embeds = serialise_embeds(embeds)
         if serialised_embeds:
             body["embeds"] = serialised_embeds
-        serialised_buttons = serialise_buttons(buttons)
+        resolved_buttons, serialised_buttons = _resolve_and_validate_buttons(
+            buttons, button_cooldown
+        )
         if serialised_buttons:
             body["buttons"] = serialised_buttons
         _require_something_to_say(text, serialised_embeds, serialised_buttons)
@@ -374,7 +416,9 @@ class BaseContext:
             body=body,
             idempotency_key=str(uuid.uuid4()),
         )
-        return _message_from_wire(response)
+        message = _message_from_wire(response)
+        _record_button_cooldowns(self._http, message.id, button_cooldown, resolved_buttons)
+        return message
 
     async def send(
         self,
@@ -384,6 +428,7 @@ class BaseContext:
         mentions: list[Mention | User | dict[str, str]] | None = None,
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
+        button_cooldown: CooldownSpec = UNSET,
     ) -> Message:
         """Post `text` to any chat the bot is in — `ctx.chat` or another one —
         as a plain message, never quoting. Pass `mentions` to @-mention
@@ -392,10 +437,16 @@ class BaseContext:
         `text` or the server refuses the send. Pass `embeds`/`buttons` to
         attach a card — `text` is optional when either is present, so
         `ctx.send(chat, embeds=[card])` is an embed-only message. Returns
-        the `Message` the server stored."""
+        the `Message` the server stored.
+
+        `button_cooldown` is the card-level cooldown every button on this
+        card inherits unless it names its own — same tri-state rule as
+        `reply()`'s (AMENDMENT-08 §3)."""
         entries = [_mention_entry(m) for m in mentions] if mentions is not None else None
         serialised_embeds = serialise_embeds(embeds)
-        serialised_buttons = serialise_buttons(buttons)
+        resolved_buttons, serialised_buttons = _resolve_and_validate_buttons(
+            buttons, button_cooldown
+        )
         _require_something_to_say(text, serialised_embeds, serialised_buttons)
         response = await self._http.send_message(
             _ref_id(chat),
@@ -405,7 +456,9 @@ class BaseContext:
             embeds=serialised_embeds,
             buttons=serialised_buttons,
         )
-        return _message_from_wire(response)
+        message = _message_from_wire(response)
+        _record_button_cooldowns(self._http, message.id, button_cooldown, resolved_buttons)
+        return message
 
     def typing(self) -> contextlib.AbstractAsyncContextManager[None]:
         """`async with ctx.typing():` — shows the chat that the bot is thinking
@@ -454,16 +507,25 @@ class BaseContext:
         embeds off the card and `buttons=[]` takes the row off. `text=""` is a
         real value, not an absence — a card may carry empty text, and only an
         edit whose merged result has nothing left in it is refused as empty.
-        Naming none of the three is refused here, before the round trip."""
+        Naming none of the three is refused here, before the round trip.
+
+        There is no `button_cooldown` parameter here — AMENDMENT-08 §3 names
+        `send()` as the card-level attachment point. When `buttons` replaces
+        the row, each button's own `Button(cooldown=)` still carries through
+        to AMENDMENT-08's lookup table; the card level for this edit is
+        `UNSET` (inherits the bot default), same as an untouched card would."""
         if text is None and embeds is None and buttons is None:
             raise ValueError(NOTHING_TO_EDIT)
+        resolved_buttons = resolve_buttons(buttons) if buttons else []
         response = await self._http.edit_message(
             _ref_id(msg),
             text,
             embeds=_embeds_part(embeds),
             buttons=_buttons_part(buttons),
         )
-        return _message_from_wire(response)
+        message = _message_from_wire(response)
+        _record_button_cooldowns(self._http, message.id, UNSET, resolved_buttons)
+        return message
 
     async def delete(self, msg: Message | str) -> None:
         """Delete a message the bot sent, by `Message` or id. Only the bot's
@@ -662,13 +724,22 @@ class ButtonContext(BaseContext):
         present", an empty list clears that part, and a fresh `buttons` row
         starts unused. An ack carrying a card never marks the message edited.
         `ctx.ack()` with no arguments sends no body at all and is
-        byte-identical to what 0.5.0 sent."""
+        byte-identical to what 0.5.0 sent.
+
+        No `button_cooldown` parameter, same reasoning as `edit()`'s: when
+        `buttons` replaces the row, each button's own `Button(cooldown=)`
+        still carries through to AMENDMENT-08's lookup table, at `UNSET`
+        card level. There is no way to send a cooldown ack yourself through
+        here — that ack is the SDK's own automatic one (§5), never
+        developer-facing."""
+        resolved_buttons = resolve_buttons(buttons) if buttons else []
         await self._http.ack_interaction(
             self.interaction,
             text,
             embeds=_embeds_part(embeds),
             buttons=_buttons_part(buttons),
         )
+        _record_button_cooldowns(self._http, self.message.id, UNSET, resolved_buttons)
 
 
 class EventContext(BaseContext):

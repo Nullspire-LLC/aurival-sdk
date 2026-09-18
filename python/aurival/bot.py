@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import math
 import signal
 import sys
 import time
@@ -18,11 +19,15 @@ import aiohttp
 
 from . import events as _events
 from .auth import Auth, KeyFile, machine_label, pair, resolve_host
+from .caps import COOLDOWN_COMMAND_NOTICE
+from .cooldown import UNSET, Cooldown, CooldownSpec, resolve_subject, validate_button_cooldown
 from .errors import (
     AurivalAPIError,
     AurivalError,
     BotSuspended,
+    ButtonAlreadyUsed,
     KeyRevoked,
+    NotFound,
     RateLimitError,
     SessionSuperseded,
 )
@@ -68,6 +73,13 @@ _AnyHandler = Callable[[Any], Awaitable[None]]
 Reportable = BaseException | Event
 ErrorHook = Callable[[Reportable, AnyContext | None], Awaitable[None] | None]
 
+# AMENDMENT-08 §4: `(ctx, retry_after)` — the context the handler would have
+# received, and the seconds remaining as a float. Registered bot-level via
+# `@bot.on_cooldown`, or per-command via `bot.command(..., on_cooldown=)`;
+# per-command wins, only one ever runs. There is no third door: `command()`
+# returns the handler function unchanged, nothing is attached to it.
+CooldownHook = Callable[[Context, float], Awaitable[None] | None]
+
 # How long a clean shutdown waits for handlers that are still running (SDK-32).
 SHUTDOWN_GRACE_SECONDS = 10.0
 
@@ -78,12 +90,18 @@ _log = logging.getLogger("aurival")
 class _Registered:
     command: Command
     handler: Handler
+    cooldown: Cooldown | None = None
+    on_cooldown: CooldownHook | None = None
 
 
 # How long a command handler runs before the chat is told the bot is thinking
 # (SDK-41). Long enough that an ordinary reply never trips it, short enough
 # that a slow one reads as work in progress rather than silence.
 _AUTO_TYPING_DELAY_S = 0.3
+
+# AMENDMENT-08 §11: the one event type `_has_event_handler` always claims,
+# whether or not the developer registered anything for it.
+EVENT_BUTTON_PRESSED = "button.pressed"
 
 
 class _AutoTyping:
@@ -99,6 +117,18 @@ class Bot:
 
     First run pairs this machine: it prints a code, you approve it in the app, and
     the key lands in ./.aurival/. Every later run just starts.
+
+    `button_cooldown` (AMENDMENT-08 §3) is the bot-wide default every button
+    cooldown inherits unless a card or a button names its own — tri-state:
+    leave it unset for the owner's default (one press per two seconds per
+    user per bot, `Cooldown(1, 2.0, "user")`, no configuration required),
+    pass `None` to disable button cooldowns for this bot entirely, or pass a
+    `Cooldown` (bounded to 60 seconds, validated here at construction).
+
+    **Buckets are process memory** — see `cooldown.py`'s module docstring.
+    This default's counts reset whenever the bot process restarts, and two
+    replicas behind a supervisor keep two independent counts; nothing here
+    is shared across `Bot` instances or across processes.
     """
 
     # A convenience alias so `Bot.Context` resolves for a developer who only
@@ -120,6 +150,7 @@ class Bot:
         logger: logging.Logger | None = None,
         quiet: bool = False,
         auto_typing: bool = True,
+        button_cooldown: CooldownSpec = UNSET,
     ) -> None:
         self._registered: dict[str, _Registered] = {}
         # Auto-typing (SDK-41): a command handler still running after
@@ -130,6 +161,7 @@ class Bot:
         self._auto_typing = auto_typing
         self._event_handlers: dict[str, list[_AnyHandler]] = {}
         self._error_hook: ErrorHook | None = None
+        self._cooldown_hook: CooldownHook | None = None
         self._log = logger or _log
         self._host = host
         self._key_path = Path(key_path) if key_path is not None else None
@@ -137,19 +169,55 @@ class Bot:
         self._http: HttpClient | None = None
         self._inflight: set[asyncio.Task[None]] = set()
         self._status = StatusReporter(quiet=quiet)
+        # AMENDMENT-08 §3: the owner's default is one press per two seconds
+        # per user per bot, on every bot, with no line of code — so `UNSET`
+        # (the caller never passed the keyword) resolves to that `Cooldown`,
+        # one fresh instance per `Bot`, never shared. `None` disables it
+        # entirely for this bot; a `Cooldown` the caller passed is bounded to
+        # 60 seconds here, at attachment, same as every other button cooldown.
+        #
+        # Buckets are process memory — see `cooldown.py`'s module docstring —
+        # so this default's counts reset whenever the bot process restarts,
+        # and two replicas behind a supervisor keep two independent counts.
+        if button_cooldown is UNSET:
+            self._button_cooldown_default: Cooldown | None = Cooldown(1, 2.0, "user")
+        else:
+            if button_cooldown is not None:
+                validate_button_cooldown(button_cooldown)
+            self._button_cooldown_default = button_cooldown
 
     # -- registration ------------------------------------------------------
 
-    def command(self, name: str, description: str = "") -> Callable[[Handler], Handler]:
+    def command(
+        self,
+        name: str,
+        description: str = "",
+        *,
+        cooldown: Cooldown | None = None,
+        on_cooldown: CooldownHook | None = None,
+    ) -> Callable[[Handler], Handler]:
         """Declare a command. The name is sent as written — the server is the
-        validator (SDK-29), and it lowercases and trims before it checks."""
+        validator (SDK-29), and it lowercases and trims before it checks.
+
+        `cooldown` (AMENDMENT-08 §2) attaches a `Cooldown` to this command —
+        no default, none unless asked, and unbounded (a command cooldown
+        never reaches the wire, so a `Cooldown(1, 3600.0)` — once an hour —
+        is legitimate). `on_cooldown` replaces the fixed `Slow down. Try
+        /{name} again in {n} s.` reply for this command only, and beats a
+        bot-level `@bot.on_cooldown`. There is no other way to set it: the
+        returned handler is not touched, so it carries no `.on_cooldown`
+        attribute — the kwarg here and `@bot.on_cooldown` are the only two
+        doors."""
 
         def decorate(fn: Handler) -> Handler:
             key = self._lookup_key(name)
             if key in self._registered:
                 self._status.duplicate_command(name)
             self._registered[key] = _Registered(
-                command=Command(name=name, description=description), handler=fn
+                command=Command(name=name, description=description),
+                handler=fn,
+                cooldown=cooldown,
+                on_cooldown=on_cooldown,
             )
             return fn
 
@@ -254,12 +322,33 @@ class Bot:
         return decorate
 
     def _has_event_handler(self, event_type: str) -> bool:
+        if event_type == EVENT_BUTTON_PRESSED:
+            # The SDK's own cooldown check and automatic ack (AMENDMENT-08
+            # §5) always need to see a press, whether or not the developer
+            # registered a `bot.on("button.pressed", ...)` handler — so this
+            # never reports "nothing registered" for it, unlike every other
+            # generic event type.
+            return True
         return bool(self._event_handlers.get(event_type))
 
     def on_error(self, fn: ErrorHook) -> ErrorHook:
         """Called with (error, context | None) for anything the SDK caught for you:
         a handler that raised, a `problem` frame, a backlog overflow."""
         self._error_hook = fn
+        return fn
+
+    def on_cooldown(self, fn: CooldownHook) -> CooldownHook:
+        """Bot-level cooldown hook (AMENDMENT-08 §4): called `(ctx,
+        retry_after)` once per bucket per window whenever a command cooldown
+        refuses and that command has no `on_cooldown` of its own. Replaces
+        the fixed `Slow down. Try /{name} again in {n} s.` reply entirely —
+        the SDK sends nothing when a hook is registered, so a hook that does
+        nothing means the bot is silent for that refusal. A hook that raises
+        goes to `on_error` like any other handler, and the bot stays up.
+        There is no button equivalent: a button cooldown's notice is a toast
+        the client renders from a number, with nothing for a hook to
+        replace (§9)."""
+        self._cooldown_hook = fn
         return fn
 
     @staticmethod
@@ -536,6 +625,20 @@ class Bot:
 
             assert self._http is not None
             ctx = Context.from_event(event, http=self._http)
+
+            # AMENDMENT-08 §3, §6: the cooldown check runs before auto-typing
+            # and before the handler, and a refused invocation never reaches
+            # either. A pass consumes a token; a refusal consumes nothing.
+            if registered.cooldown is not None:
+                subject = resolve_subject(
+                    registered.cooldown.bucket, user_id=ctx.sender.id, chat_id=ctx.chat.id
+                )
+                key = ((), subject)
+                retry_after = registered.cooldown.check(key)
+                if retry_after is not None:
+                    await self._notice_command_cooldown(registered, ctx, key, retry_after)
+                    return
+
             typing = self._start_auto_typing(ctx)
             try:
                 await registered.handler(ctx)
@@ -545,6 +648,10 @@ class Bot:
                 await self._call_error_hook(exc, ctx)
             finally:
                 await self._stop_auto_typing(typing, ctx)
+            return
+
+        if event.type == EVENT_BUTTON_PRESSED:
+            await self._dispatch_button_press(event)
             return
 
         handlers = self._event_handlers.get(event.type)
@@ -559,6 +666,108 @@ class Bot:
             except Exception as exc:
                 self._log.exception("handler for event %r raised", event.type)
                 await self._call_error_hook(exc, generic)
+
+    # -- command cooldown notice (AMENDMENT-08 §4) --------------------------
+
+    async def _notice_command_cooldown(
+        self,
+        registered: _Registered,
+        ctx: Context,
+        key: object,
+        retry_after: float,
+    ) -> None:
+        """Once per bucket per window: either the per-command hook, or the
+        bot-level one, or — with neither registered — the fixed reply. A
+        hook that raises goes through `_call_error_hook`, same as a command
+        handler that raises."""
+        assert registered.cooldown is not None
+        if not registered.cooldown.should_notify(key):
+            return
+        hook = registered.on_cooldown or self._cooldown_hook
+        if hook is not None:
+            try:
+                result = hook(ctx, retry_after)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                self._log.exception("on_cooldown hook raised")
+                await self._call_error_hook(exc, ctx)
+            return
+        n = max(1, math.ceil(retry_after))
+        await ctx.reply(COOLDOWN_COMMAND_NOTICE.format(name=registered.command.name, n=n))
+
+    # -- button press cooldown + dispatch (AMENDMENT-08 §3, §5) -------------
+
+    def _resolve_button_cooldown(self, ctx: ButtonContext) -> tuple[Cooldown | None, object]:
+        """Precedence button > card > bot default (§3), resolved from the
+        table `send()`/`reply()`/`edit()`/`ack()` record into — a message id
+        missing from it (a restart, or a card another process sent) falls
+        through to the bot default, exactly as an unrecorded card would.
+
+        Returns the `Cooldown` to check (or `None` if disabled at every
+        level that applies) and the key to check it with — `()` attachment
+        scope for the bot default (one bucket per user per bot, §3), else
+        `(message_id, button_id)` for a per-card/per-button `Cooldown`."""
+        assert self._http is not None
+        resolved: CooldownSpec = UNSET
+        record = self._http.cooldowns.lookup(ctx.message.id) if ctx.message.id else None
+        if record is not None:
+            card_cooldown, button_cooldowns = record
+            resolved = button_cooldowns.get(ctx.button, UNSET)
+            if resolved is UNSET:
+                resolved = card_cooldown
+
+        if resolved is UNSET:
+            cooldown = self._button_cooldown_default
+            attachment_scope: object = ()
+        elif resolved is None:
+            return None, ()
+        else:
+            cooldown = resolved
+            attachment_scope = (ctx.message.id, ctx.button)
+
+        if cooldown is None:
+            return None, ()
+        subject = resolve_subject(cooldown.bucket, user_id=ctx.user.id, chat_id=ctx.chat.id)
+        return cooldown, (attachment_scope, subject)
+
+    async def _dispatch_button_press(self, event: Event) -> None:
+        assert self._http is not None
+        ctx = context_for(event, http=self._http)
+        assert isinstance(ctx, ButtonContext)
+
+        cooldown, key = self._resolve_button_cooldown(ctx)
+        if cooldown is not None:
+            retry_after = cooldown.check(key)
+            if retry_after is not None:
+                ms = max(1, math.ceil(retry_after * 1000))
+                try:
+                    await self._http.ack_interaction(ctx.interaction, cooldown_retry_after_ms=ms)
+                # AMENDMENT-08 §11 (D15): this ack is the SDK acting, not the
+                # developer, so a press that is already moot — spent,
+                # replaced, or the message is gone — is swallowed silently.
+                # There is nothing a bot author can do about a request they
+                # did not write.
+                except (ButtonAlreadyUsed, NotFound) as exc:
+                    self._log.debug(
+                        "cooldown ack for interaction %s swallowed: %s", ctx.interaction, exc
+                    )
+                except Exception as exc:
+                    self._log.exception(
+                        "cooldown ack for interaction %s failed", ctx.interaction
+                    )
+                    await self._call_error_hook(exc, ctx)
+                return
+
+        handlers = self._event_handlers.get(event.type)
+        if not handlers:
+            return
+        for handler in handlers:
+            try:
+                await handler(ctx)
+            except Exception as exc:
+                self._log.exception("handler for event %r raised", event.type)
+                await self._call_error_hook(exc, ctx)
 
     def _on_problem(self, error: AurivalAPIError | Event) -> None:
         task = asyncio.create_task(self._call_error_hook(error, None))

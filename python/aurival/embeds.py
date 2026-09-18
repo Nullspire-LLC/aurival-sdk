@@ -46,6 +46,13 @@ from .caps import (
     MAX_LINK_URL_RUNES,
     MAX_TITLE_LENGTH,
 )
+from .cooldown import (
+    LINK_BUTTON_CANNOT_HAVE_COOLDOWN,
+    UNSET,
+    Cooldown,
+    CooldownSpec,
+    validate_button_cooldown,
+)
 
 _EMBED_KNOWN_KEYS = {
     "title",
@@ -389,7 +396,15 @@ class Embed:
 class Button:
     """A Discord-shaped button. `Button("Pacific")` derives an id from the
     label; pass `id=` to pin one explicitly. A link pill is built through
-    `Button.link(...)`, never by passing `style="link"` without a url."""
+    `Button.link(...)`, never by passing `style="link"` without a url.
+
+    `cooldown` (AMENDMENT-08 §3) is tri-state: leave it unset to inherit
+    whatever the card (`send(..., button_cooldown=)`) or the bot
+    (`Bot(button_cooldown=)`) has, pass `None` to disable a cooldown for this
+    one button, or pass a `Cooldown` to use it — precedence is button > card
+    > bot default. Bounded to 60 seconds, validated here at attachment time.
+    A link button can never carry one: it never round-trips to the SDK, so
+    there is nothing to throttle."""
 
     def __init__(
         self,
@@ -398,6 +413,7 @@ class Button:
         style: str = "primary",
         emoji: str | None = None,
         url: str | None = None,
+        cooldown: CooldownSpec = UNSET,
     ) -> None:
         if not label:
             raise ValueError(CAP_BUTTON_MISSING_LABEL)
@@ -423,11 +439,19 @@ class Button:
             resolved_id = _slugify(label)
         if emoji is not None:
             _require_emoji(emoji)
+        if isinstance(cooldown, Cooldown):
+            # A link button never reaches the SDK for a press (AMENDMENT-08
+            # §7), so a cooldown on one can never do anything — refused here,
+            # not silently ignored.
+            if style == "link":
+                raise ValueError(LINK_BUTTON_CANNOT_HAVE_COOLDOWN)
+            validate_button_cooldown(cooldown)
         self.label = label
         self.style = style
         self.id = resolved_id
         self.emoji = emoji
         self.url = resolved_url
+        self.cooldown: CooldownSpec = cooldown
         self._extra: dict[str, object] = {}
 
     @classmethod
@@ -437,7 +461,8 @@ class Button:
         """The sanctioned way to build a link pill (AMENDMENT-06 §11). A tap
         opens the url on the device and stops there: no event comes back, and
         the row is never marked used. The label stays required and the id is
-        still slugged from it, exactly as for an action button."""
+        still slugged from it, exactly as for an action button. No
+        `cooldown` parameter here on purpose — see `Button`'s docstring."""
         return cls(label, id=id, style="link", emoji=emoji, url=url)
 
     def to_dict(self) -> dict[str, object]:
@@ -521,14 +546,18 @@ def serialise_embeds(embeds: list[EmbedLike] | None) -> list[dict[str, object]]:
     return result
 
 
-def serialise_buttons(buttons: list[ButtonLike] | None) -> list[dict[str, object]]:
-    """Same rules as `serialise_embeds`, plus a within-message duplicate-id
-    refusal (CONTRACT-V1: a button id must be unique within a message)."""
+def resolve_buttons(buttons: list[ButtonLike] | None) -> list[Button]:
+    """Validate a list of `Button` builders or raw dicts to shape (a)'s
+    within-message rules — cap, duplicate id — and return the resolved
+    `Button` objects (not yet serialised). `serialise_buttons` is this plus
+    `.to_dict()`; this half exists on its own so a caller that needs the
+    resolved `.id`/`.cooldown` (AMENDMENT-08's card-cooldown lookup table)
+    doesn't have to re-run resolution against the serialised dicts."""
     if not buttons:
         return []
     if len(buttons) > MAX_BUTTONS:
         raise ValueError(CAP_TOO_MANY_BUTTONS)
-    result: list[dict[str, object]] = []
+    result: list[Button] = []
     seen_ids: set[str] = set()
     for b in buttons:
         if isinstance(b, Button):
@@ -540,5 +569,11 @@ def serialise_buttons(buttons: list[ButtonLike] | None) -> list[dict[str, object
         if btn.id in seen_ids:
             raise ValueError(CAP_DUPLICATE_BUTTON_ID)
         seen_ids.add(btn.id)
-        result.append(btn.to_dict())
+        result.append(btn)
     return result
+
+
+def serialise_buttons(buttons: list[ButtonLike] | None) -> list[dict[str, object]]:
+    """Same rules as `serialise_embeds`, plus a within-message duplicate-id
+    refusal (CONTRACT-V1: a button id must be unique within a message)."""
+    return [btn.to_dict() for btn in resolve_buttons(buttons)]

@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import * as errors from './errors.js';
 import type { Auth } from './auth.js';
+import { CardCooldownTable } from './cooldown.js';
 
 export const DEFAULT_HOST = 'https://bots.aurival.com';
 
@@ -131,6 +132,15 @@ export class HttpClient {
   readonly #host: string;
   readonly #auth: Auth | null;
   readonly #logger: Logger;
+  /**
+   * AMENDMENT-08 §3's "card lookup on press" — every `HttpClient` (one per
+   * `Bot.start()`) carries its own table, so `events.ts`'s `send`/`reply`/
+   * `edit`/`ack` (which already hold `#http`) and `bot.ts`'s button-press
+   * dispatch (which constructs its `Context`/`ButtonContext` through the same
+   * `HttpClient`) share one instance without threading a new parameter
+   * through every context constructor.
+   */
+  readonly cardCooldowns = new CardCooldownTable();
   /** Injectable so a retry/backoff test never actually waits. */
   sleep: (ms: number) => Promise<void> = (ms) =>
     new Promise((resolve) => {
@@ -357,6 +367,23 @@ export class HttpClient {
       if (Object.keys(body).length > 0) options.body = body;
     }
     await this.request('POST', `/v1/interactions/${interaction}/ack`, options);
+  }
+
+  /**
+   * `POST /v1/interactions/{interaction}/ack` with `{"cooldown":
+   * {"retry_after_ms": N}}` (AMENDMENT-08 §5.1) — the SDK's own automatic
+   * answer to a button press its `Cooldown` refused. Deliberately a separate
+   * method from `ackInteraction` rather than a fourth `CardParts` field:
+   * `cooldown` is mutually exclusive with `text`/`embeds`/`buttons` on the
+   * wire (`cooldown_with_body`, §7/§8), and a caller of `ackInteraction`
+   * building a `CardParts` has no way to accidentally set both when the two
+   * are different methods entirely. Still 204 (R-3).
+   */
+  async ackCooldown(interaction: string, retryAfterMs: number): Promise<void> {
+    await this.request('POST', `/v1/interactions/${interaction}/ack`, {
+      body: { cooldown: { retry_after_ms: retryAfterMs } },
+      idempotencyKey: randomUUID(),
+    });
   }
 
   /** GET, so no idempotency key — reads are never retried-as-a-write. */

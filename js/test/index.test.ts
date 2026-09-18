@@ -19,6 +19,12 @@
  * and per-field refusals (`TooManyEmbeds` through `ButtonAlreadyUsed`),
  * taking python's `__all__` to 92 and this mirror's count to 91 names plus
  * the JS-only `MentionLike`.
+ *
+ * AMENDMENT-08 (0.7.0) adds the cooldown primitive: `Cooldown` (the runtime
+ * builder class §2 shows imported straight from `'aurival'`) and two more
+ * error classes for the ack's two new refusals, `CooldownWithBody` and
+ * `CooldownRetryAfterInvalid` — three more mirrored names, taking the count
+ * to 103.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -89,6 +95,9 @@ const EXPECTED = [
   'Chat',
   'Command',
   'Context',
+  'Cooldown',
+  'CooldownRetryAfterInvalid',
+  'CooldownWithBody',
   'DOC_URL_PREFIX',
   'DuplicateButtonID',
   'Embed',
@@ -171,8 +180,11 @@ describe('the public surface', () => {
   // `MentionLike`.
   // AMENDMENT-07 §7 then adds `NothingToEdit`, mirrored in both SDKs — 99
   // mirrored names plus `MentionLike`, 100 total.
-  it('is exactly the 99 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(100);
+  // AMENDMENT-08 then adds `Cooldown`, `CooldownWithBody` and
+  // `CooldownRetryAfterInvalid`, all mirrored in both SDKs — 102 mirrored
+  // names plus `MentionLike`, 103 total.
+  it('is exactly the 102 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(103);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -249,6 +261,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.6.0');
+    expect(aurival.version).toBe('0.7.0');
   });
 });

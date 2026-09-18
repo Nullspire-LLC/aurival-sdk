@@ -435,6 +435,95 @@ is single-use, and acking one a second time doesn't throw locally, the server 40
 The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
 [cookbook](https://bots.aurival.com/docs/cookbook).
 
+## Cooldowns
+
+A cooldown paces a command or a button. You attach it, the SDK keeps the bucket, and the wire
+never carries it — the server does not know one exists.
+
+```ts
+import { Bot, Cooldown } from 'aurival';
+
+const bot = new Bot();                      // buttonCooldown: Cooldown(1, 2) already
+
+bot.command('roll', { cooldown: { rate: 1, per: 5 } }, async (ctx) => { /* … */ });
+bot.command('leaderboard', { cooldown: new Cooldown(3, 60, 'chat') }, async (ctx) => { /* … */ });
+```
+
+**`per` is seconds, not milliseconds.** That is deliberate and it is the one place this SDK
+departs from JS habit: `AurivalAPIError.retryAfter` is already seconds, and a developer who
+catches one and a developer who writes a cooldown should not hold two meanings of one number.
+
+The options object is a third form of `command()`. The two you already use —
+`command(name, handler)` and `command(name, description, handler)` — are untouched, and
+`description` is a field on the options object when you want all three.
+
+Three buckets, and each one says who shares the limit:
+
+| bucket             | key                            | reads as                                        |
+| ------------------ | ------------------------------ | ----------------------------------------------- |
+| `user` (default)   | the invoking or pressing user  | each person gets one every N seconds            |
+| `chat`             | the conversation               | this chat gets one every N seconds, whoever asks |
+| `global`           | nothing                        | this bot answers one every N seconds, everywhere |
+
+A command that is refused never reaches your handler, and a refusal spends nothing — the token
+is taken only when the call passes.
+
+### What the member sees
+
+One plain reply per bucket per window, then silence for the rest of it. Somebody who types
+`/roll` eight times in five seconds gets one sentence, not eight:
+
+```
+Slow down. Try /roll again in 3 s.
+```
+
+Replace it, or suppress it, with a hook. A registered hook owns the whole response: the SDK
+sends nothing and the hook either replies or stays quiet. There is no return value to get right.
+
+```ts
+bot.onCooldown(async (ctx, retryAfter) => {          // bot-level
+  await ctx.reply(`easy, ${Math.ceil(retryAfter)}s`);
+});
+
+bot.command('roll', { cooldown: { rate: 1, per: 5 }, onCooldown }, handler); // this one wins
+```
+
+`retryAfter` is seconds remaining, unrounded. The hook is called once per bucket per window too,
+so replacing the sentence does not re-introduce the spam it existed to stop.
+
+### Buttons already have one
+
+Every bot ships with `Cooldown(1, 2, 'user')` on its buttons, without asking: one press every two
+seconds per person, one bucket per person per bot. A press inside the window is answered rather
+than handled — the presser's pending ink clears and their device shows a toast — and the button
+stays live, because a cooldown is a wait, not a spend.
+
+Override it where it belongs, and precedence is button, then card, then the bot default:
+
+```ts
+const bot = new Bot({ buttonCooldown: { rate: 1, per: 5 } }); // this bot's buttons
+await ctx.reply({ buttons, buttonCooldown: null });           // this card's buttons, off
+new Button({ label: 'Paint', cooldown: null });               // this one button, off
+```
+
+A per-card or per-button cooldown gets its own buckets, keyed on the message, the button id and
+the bucket subject — button ids are unique within a message and nowhere else, so two cards that
+both call a button `roll` never share a limit. `null` disables at any level.
+
+A button cooldown is at most 60 seconds and is refused where you write it, not later inside an
+ack you cannot see. Command cooldowns have no cap: `{ rate: 1, per: 3600 }` on a command is a
+legitimate once an hour.
+
+Link buttons are outside all of this — a link opens on the device and never round-trips, so it
+cannot carry a cooldown and `Button.link` has no `cooldown` field.
+
+### The caveat, said plainly
+
+**Buckets are process memory.** They reset on restart, and they are not shared between
+instances: a bot running two processes has two independent buckets, and a deploy clears every
+bucket it had. Cooldowns pace a conversation. They are not a quota, and they are not the abuse
+bound — the server keeps its own floor underneath them.
+
 ## Upgrading from 0.2.x
 
 There is one `Context` per event family now, instead of one class for every event with most of
@@ -560,6 +649,27 @@ outside a press:
 await ctx.edit(sent, { embeds: [new Embed({ title: 'Starting in 3…' })] });
 await ctx.edit(sent, { buttons: [] });   // the row is gone, the plate stays
 ```
+
+### Upgrading from 0.6.x
+
+0.7.0 adds cooldowns and takes nothing away. `Cooldown` is a new export, `command()` gained a
+third options form, `Bot` gained `buttonCooldown`, `reply()`/`send()` gained `buttonCooldown`,
+and `Button` gained `cooldown`. Every one of them has a default that keeps 0.6.0 behaviour, with
+**one exception you should know about**: buttons now carry `Cooldown(1, 2, 'user')` by default,
+so a member cannot press the same bot's buttons faster than once every two seconds. That is
+deliberate and it is on by default. If your bot's buttons are something a member is meant to
+mash, turn it off explicitly:
+
+```ts
+const bot = new Bot({ buttonCooldown: null });
+```
+
+Both existing `command()` overloads keep their exact signatures, so no call you have written
+changes shape.
+
+Two new error classes ship with it, `CooldownWithBody` and `CooldownRetryAfterInvalid`, both
+`InvalidRequestError`. You will not normally see either: the SDK builds the cooldown ack itself
+and refuses an out-of-range button cooldown where you write it.
 
 ## Shadowed commands
 

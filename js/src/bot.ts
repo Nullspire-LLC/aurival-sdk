@@ -2,7 +2,7 @@
 
 import { Auth, KeyFile, machineLabel, pair, resolveHost } from './auth.js';
 import type { Machine, MachineKey } from './auth.js';
-import { AurivalError, BotSuspended, RateLimitError, SessionSuperseded } from './errors.js';
+import { AurivalError, BotSuspended, ButtonAlreadyUsed, NotFound, RateLimitError, SessionSuperseded } from './errors.js';
 import { Context, Event, contextFor } from './events.js';
 import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
 import type {
@@ -19,6 +19,17 @@ import type {
   ReactionEventType,
 } from './events.js';
 import type { Logger } from './http.js';
+import { commandCooldownNotice } from './caps.js';
+import {
+  Cooldown,
+  buttonBucketKey,
+  normalizeCooldownOption,
+  resolveButtonCooldown,
+  retryAfterMs,
+  roundSeconds,
+  subjectKey,
+} from './cooldown.js';
+import type { CooldownLike, CooldownOption } from './cooldown.js';
 import { EVENT_BACKLOG_OVERFLOWED, EVENT_COMMAND_INVOKED, Socket } from './socket.js';
 import * as status from './status.js';
 
@@ -37,6 +48,17 @@ const NEVER_DISPATCHED_TO_ON: ReadonlyMap<string, string> = new Map([
 
 /** A `bot.command()` handler. */
 export type Handler = (ctx: Context) => Promise<void> | void;
+/**
+ * A per-command or bot-level cooldown hook (AMENDMENT-08 §4). `retryAfter`
+ * is the raw, unrounded seconds `Cooldown.check()` returned — round it
+ * yourself (`Math.max(1, Math.ceil(retryAfter))`, §5's rule) to reproduce
+ * the built-in sentence's `{n}`. Replaces the built-in "Slow down…" notice
+ * entirely: a hook that does nothing suppresses the notice, a hook that
+ * replies sends whatever it wants instead. Gated by the same once-per-window
+ * ledger as the built-in notice — a hook runs once per bucket per window,
+ * not on every refused call.
+ */
+export type OnCooldownHook = (ctx: Context, retryAfter: number) => Promise<void> | void;
 /** A `member.joined` / `member.left` handler. */
 export type MemberHandler = (ctx: MemberContext) => Promise<void> | void;
 /** A `bot.added` / `bot.removed` handler. */
@@ -79,6 +101,33 @@ export interface BotOptions {
    * keeps typing entirely in your hands (`ctx.withTyping()`). Default `true`.
    */
   autoTyping?: boolean | undefined;
+  /**
+   * The default cooldown a button press checks when neither its card nor
+   * the button itself carries one (AMENDMENT-08 §3). Defaults to `new
+   * Cooldown(1, 2.0, 'user')` — one press per user per two seconds — when
+   * omitted; pass `null` to disable it bot-wide, leaving only card/button
+   * cooldowns (if any) in effect. Bound by the same 60s cap as every other
+   * button-family cooldown, checked at construction. **Its bucket lives in
+   * process memory: it resets on every restart, and it is never shared
+   * across instances or processes** — a bot running two workers has two
+   * independent buckets (see {@link Cooldown}'s own doc comment for why).
+   */
+  buttonCooldown?: CooldownOption | undefined;
+}
+
+/**
+ * A command's third form: `bot.command(name, { cooldown, onCooldown,
+ * description }, handler)`. `description` here is equivalent to the
+ * two-argument string overload's — the options object is a third spelling
+ * of the same call, not a different feature (R-9's two string overloads are
+ * unchanged; this is additive). `cooldown` accepts a `Cooldown` instance or
+ * a plain `{ rate, per, bucket? }` literal, normalized at registration.
+ * Command cooldowns have no 60s cap (D13) — they never reach the wire.
+ */
+export interface CommandOptions {
+  description?: string | undefined;
+  cooldown?: CooldownLike | undefined;
+  onCooldown?: OnCooldownHook | undefined;
 }
 
 /**
@@ -98,6 +147,9 @@ const noAutoTyping: AutoTyping = { stop: async () => undefined };
 interface Registered {
   command: Command;
   handler: Handler;
+  /** Unbounded per §5/D13 — never attachment-time-capped like a button cooldown. */
+  cooldown?: Cooldown;
+  onCooldown?: OnCooldownHook;
 }
 
 // Mirrors the server's own normalisation (commands.go) so `Ping` finds the
@@ -197,6 +249,8 @@ export class Bot {
   #http: HttpClient | null = null;
   readonly #quiet: boolean;
   readonly #autoTyping: boolean;
+  readonly #buttonCooldown: Cooldown | null;
+  #cooldownHook: OnCooldownHook | null = null;
 
   constructor(options: BotOptions = {}) {
     this.#log = options.logger ?? defaultLogger();
@@ -204,6 +258,11 @@ export class Bot {
     this.#keyPath = options.keyPath;
     this.#quiet = status.isQuiet(options.quiet);
     this.#autoTyping = options.autoTyping ?? true;
+    const resolvedButtonCooldown = normalizeCooldownOption(options.buttonCooldown, {
+      boundToButton: true,
+    });
+    this.#buttonCooldown =
+      resolvedButtonCooldown === undefined ? new Cooldown(1, 2.0, 'user') : resolvedButtonCooldown;
   }
 
   // -- registration ------------------------------------------------------
@@ -214,13 +273,40 @@ export class Bot {
    */
   command(name: string, handler: Handler): void;
   command(name: string, description: string, handler: Handler): void;
-  command(name: string, second: string | Handler, third?: Handler): void {
-    const description = typeof second === 'string' ? second : '';
-    const handler = typeof second === 'string' ? third : second;
+  /**
+   * The options form (AMENDMENT-08 §4/seat ruling): a per-command cooldown
+   * is an option here, not a decorator. `{ cooldown, onCooldown }` beats
+   * `bot.onCooldown()` for this command alone — only one hook ever runs for
+   * a given refusal.
+   */
+  command(name: string, options: CommandOptions, handler: Handler): void;
+  command(
+    name: string,
+    second: string | Handler | CommandOptions,
+    third?: Handler,
+  ): void {
+    let description = '';
+    let handler: Handler | undefined;
+    let cooldownLike: CooldownLike | undefined;
+    let onCooldownHook: OnCooldownHook | undefined;
+    if (typeof second === 'string') {
+      description = second;
+      handler = third;
+    } else if (typeof second === 'function') {
+      handler = second;
+    } else {
+      description = second.description ?? '';
+      cooldownLike = second.cooldown;
+      onCooldownHook = second.onCooldown;
+      handler = third;
+    }
     if (handler === undefined) throw new AurivalError(`command(${name}) needs a handler`);
     const key = lookupKey(name);
     if (this.#registered.has(key)) status.duplicateCommand(name, this.#quiet);
-    this.#registered.set(key, { command: { name, description }, handler });
+    const registered: Registered = { command: { name, description }, handler };
+    if (cooldownLike !== undefined) registered.cooldown = Cooldown.from(cooldownLike);
+    if (onCooldownHook !== undefined) registered.onCooldown = onCooldownHook;
+    this.#registered.set(key, registered);
   }
 
   /**
@@ -270,6 +356,15 @@ export class Bot {
    */
   onError(fn: ErrorHook): void {
     this.#errorHook = fn;
+  }
+
+  /**
+   * The bot-level cooldown hook (AMENDMENT-08 §4) — runs for any refused
+   * command that does not carry its own `onCooldown` option. A per-command
+   * hook always wins; only one hook ever runs for a given refusal.
+   */
+  onCooldown(fn: OnCooldownHook): void {
+    this.#cooldownHook = fn;
   }
 
   // -- running -----------------------------------------------------------
@@ -333,7 +428,16 @@ export class Bot {
       onProblem: (problem) => {
         void this.#callErrorHook(problem, null);
       },
-      hasHandler: (type) => this.#onHandlers.has(type),
+      // `button.pressed` always claims a handler exists, whether or not a
+      // developer ever called `on('button.pressed', ...)` — a press must
+      // reach `#handleButtonPress` so the cooldown check (and its ack on
+      // refusal) always runs, even for a bot that only sends cards and
+      // handles presses nowhere, or not yet (AMENDMENT-08 §1/§5: the button
+      // default applies to every bot with no line of code, and the presser
+      // must never be left staring at pending ink). A press that passes
+      // with no registered handler simply falls through `#handleGeneric`
+      // with nothing to call; the socket-level ack still fires either way.
+      hasHandler: (type) => type === 'button.pressed' || this.#onHandlers.has(type),
       logger: this.#log,
       botName: machine.bot,
       commandCount: this.#registered.size,
@@ -440,6 +544,10 @@ export class Bot {
       await this.#handleCommand(event);
       return;
     }
+    if (event.type === 'button.pressed') {
+      await this.#handleButtonPress(event);
+      return;
+    }
     await this.#handleGeneric(event);
   }
 
@@ -454,6 +562,12 @@ export class Bot {
     }
     if (this.#http === null) return;
     const ctx = Context.fromEvent(event, this.#http);
+    // AMENDMENT-08: the cooldown check runs before auto-typing and before the
+    // handler — a refused invocation never reaches either.
+    if (registered.cooldown !== undefined) {
+      const refused = await this.#handleCommandCooldown(ctx, registered);
+      if (refused) return;
+    }
     const typing = this.#startAutoTyping(ctx);
     try {
       await registered.handler(ctx);
@@ -465,6 +579,100 @@ export class Bot {
       await this.#callErrorHook(exc, ctx);
     } finally {
       await typing.stop();
+    }
+  }
+
+  /**
+   * A registered command's own cooldown (AMENDMENT-08 §4). Returns `true`
+   * when the invocation was refused (dispatch stops here). Its bucket key
+   * carries no message/button scope (`attachmentScope = ()`) — each
+   * command's `Cooldown` is its own instance, so nothing else could collide
+   * with it anyway.
+   *
+   * Once per bucket per window: either the per-command hook, the bot-level
+   * one, or — with neither registered — the fixed reply. A hook does not
+   * run on every refused call; it shares the same `noticeOnce` gate the
+   * built-in notice uses, so mashing a refused command inside one window
+   * produces one hook call (or one reply), not a flood of them.
+   */
+  async #handleCommandCooldown(ctx: Context, registered: Registered): Promise<boolean> {
+    const cooldown = registered.cooldown;
+    if (cooldown === undefined) return false;
+    const key = subjectKey(cooldown.bucket, ctx.sender.id, ctx.chat.id);
+    const refusedAfterSeconds = cooldown.check(key);
+    if (refusedAfterSeconds === null) return false;
+    if (!cooldown.noticeOnce(key)) return true;
+    // Per-command beats bot-level; only one hook ever runs.
+    const hook = registered.onCooldown ?? this.#cooldownHook;
+    if (hook !== null && hook !== undefined) {
+      try {
+        await hook(ctx, refusedAfterSeconds);
+      } catch (exc) {
+        this.#log.error(
+          `cooldown hook for ${JSON.stringify(ctx.command)} threw: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
+        );
+        await this.#callErrorHook(exc, ctx);
+      }
+      return true;
+    }
+    const n = roundSeconds(refusedAfterSeconds);
+    try {
+      await ctx.reply(commandCooldownNotice(ctx.command, n));
+    } catch (exc) {
+      this.#log.error(
+        `cooldown notice for ${JSON.stringify(ctx.command)} failed: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
+      );
+      await this.#callErrorHook(exc, ctx);
+    }
+    return true;
+  }
+
+  /**
+   * AMENDMENT-08 §3: resolve the pressed button's cooldown (button > card >
+   * bot default), check it, and — on refusal — send the cooldown ack
+   * instead of dispatching to any `on('button.pressed', ...)` handler. The
+   * socket still acks the underlying event exactly as it does for any other
+   * dispatch; only the handler is skipped.
+   */
+  async #handleButtonPress(event: Event): Promise<void> {
+    if (this.#http === null) return;
+    const ctx = contextFor(event, this.#http) as ButtonContext;
+    const card = this.#http.cardCooldowns.lookup(ctx.message.id);
+    const resolved = resolveButtonCooldown(this.#buttonCooldown, card, ctx.button);
+    if (resolved.cooldown !== null) {
+      const scope = resolved.scoped ? { messageId: ctx.message.id, buttonId: ctx.button } : null;
+      const key = buttonBucketKey(resolved.cooldown, scope, ctx.user.id, ctx.chat.id);
+      const refusedAfterSeconds = resolved.cooldown.check(key);
+      if (refusedAfterSeconds !== null) {
+        await this.#ackButtonCooldown(ctx, retryAfterMs(refusedAfterSeconds));
+        return;
+      }
+    }
+    await this.#handleGeneric(event);
+  }
+
+  /**
+   * The SDK's own automatic answer to a refused press (§5.1). Swallows
+   * `ButtonAlreadyUsed`/`NotFound` silently — a debug line, never `onError`,
+   * never thrown — because the press already resolved some other way (a
+   * double-tap, an expired row) and the cooldown refusal is moot. Every
+   * other status still goes through the normal error path.
+   */
+  async #ackButtonCooldown(ctx: ButtonContext, ms: number): Promise<void> {
+    if (this.#http === null) return;
+    try {
+      await this.#http.ackCooldown(ctx.interaction, ms);
+    } catch (exc) {
+      if (exc instanceof ButtonAlreadyUsed || exc instanceof NotFound) {
+        this.#log.debug(
+          `cooldown ack for ${JSON.stringify(ctx.interaction)} found the press already resolved: ${exc instanceof Error ? exc.message : String(exc)}`,
+        );
+        return;
+      }
+      this.#log.error(
+        `cooldown ack for ${JSON.stringify(ctx.interaction)} failed: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,
+      );
+      await this.#callErrorHook(exc, ctx);
     }
   }
 

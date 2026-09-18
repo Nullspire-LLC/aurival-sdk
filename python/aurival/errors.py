@@ -167,6 +167,31 @@ class NothingToEdit(InvalidRequestError):
     """
 
 
+class CooldownWithBody(InvalidRequestError):
+    """`cooldown_with_body`: a `POST /v1/interactions/{id}/ack` body carried
+    `cooldown` alongside `text`/`embeds`/`buttons` (AMENDMENT-08 §5.1) — the
+    two are mutually exclusive: `used` cannot be both untouched (a cooldown
+    ack) and reset (a replacing body) in the same request.
+
+    Ships ahead of its Go row on AMENDMENT-08 §8's authority — same bet
+    `NothingToEdit`/`TooManyProblems` made and won: L1 has not landed
+    `errors_v1.go`'s entry yet, and landing it later is a no-op here.
+    """
+
+
+class CooldownRetryAfterInvalid(InvalidRequestError):
+    """`cooldown_retry_after_invalid`: a `cooldown.retry_after_ms` on a
+    button-press ack was not a whole number of milliseconds between the
+    server's minimum and maximum (AMENDMENT-08 §5.1). The SDK itself never
+    produces an out-of-range value — it validates a button cooldown's bound
+    at attachment time (`cooldown.validate_button_cooldown`) — so this only
+    ever surfaces if the server disagrees with what the SDK computed.
+
+    Ships ahead of its Go row on AMENDMENT-08 §8's authority; see
+    `CooldownWithBody`.
+    """
+
+
 class BotSuspended(PermissionDeniedError): ...
 
 
@@ -412,6 +437,9 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     "button_already_used": ButtonAlreadyUsed,
     # AMENDMENT-07 §7: no wire sender at HEAD. See NothingToEdit.
     "nothing_to_edit": NothingToEdit,
+    # AMENDMENT-08 §8: no wire sender at HEAD. See CooldownWithBody.
+    "cooldown_with_body": CooldownWithBody,
+    "cooldown_retry_after_invalid": CooldownRetryAfterInvalid,
 }
 
 

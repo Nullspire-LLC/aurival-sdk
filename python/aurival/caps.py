@@ -61,3 +61,28 @@ EMPTY_MESSAGE = "a message needs text, embeds or buttons"
 # not landed that row in `errors_v1.go` yet — when it does, this constant and
 # the Go catalogue must stay byte-identical.
 NOTHING_TO_EDIT = "an edit needs text, embeds or buttons"
+
+# AMENDMENT-08 §4: the fixed reply a command cooldown sends, one per bucket
+# per window, when no `on_cooldown` hook is registered. `{name}` is the
+# command as the developer registered it; `{n}` is `max(1, ceil(retry_after))`.
+# Byte-identical to `sdk/js/src/caps.ts` and the docs page — it is never a Go
+# template, because a command cooldown never reaches the server.
+COOLDOWN_COMMAND_NOTICE = "Slow down. Try /{name} again in {n} s."
+
+# AMENDMENT-08 §8. These two DO have server twins (`cooldown_with_body`,
+# `cooldown_retry_after_invalid`) — unlike cooldown.py's four sentences,
+# which guard a client-side-only refusal the wire can never send back.
+CAP_COOLDOWN_WITH_BODY = "a cooldown ack carries no text, embeds or buttons"
+
+# Same convention as `CAP_LINK_URL_TOO_LONG` above: the server's own template
+# for this code carries `{min}`/`{max}` because Go's error catalogue refuses
+# a digit literal in that string, but both SDKs render the bound into the
+# sentence itself, so `min`/`max` here are the rendered numbers, not a
+# format string — `CAP_COOLDOWN_RETRY_AFTER_INVALID` is byte-identical to
+# `sdk/js/src/caps.ts`'s rendered constant, not to the Go template.
+MIN_COOLDOWN_RETRY_AFTER_MS = 1
+MAX_COOLDOWN_RETRY_AFTER_MS = 60000
+CAP_COOLDOWN_RETRY_AFTER_INVALID = (
+    "a cooldown retry_after_ms is a whole number of milliseconds between "
+    f"{MIN_COOLDOWN_RETRY_AFTER_MS} and {MAX_COOLDOWN_RETRY_AFTER_MS}"
+)

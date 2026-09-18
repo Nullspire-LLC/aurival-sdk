@@ -24,6 +24,8 @@ import {
   ButtonMissingField,
   ButtonsWithoutMessage,
   CODE_CLASSES,
+  CooldownRetryAfterInvalid,
+  CooldownWithBody,
   DOC_URL_PREFIX,
   DuplicateButtonID,
   EmbedDescriptionTooLong,
@@ -111,6 +113,10 @@ import {
 // reverse. This
 // literal is the acceptance bar for THAT number: a deleted or
 // silently-added class fails the length/key-set assertion below.
+// AMENDMENT-08 §8 then adds `cooldown_with_body` and
+// `cooldown_retry_after_invalid` (both invalid_request_error, 400), taking
+// it to 64. Both SHIP AHEAD of the Go catalogue rows too, same authority as
+// `nothing_to_edit` above.
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -174,6 +180,8 @@ const EXPECTED_CODES = [
   'embed_empty',
   'buttons_without_message',
   'button_already_used',
+  'cooldown_with_body',
+  'cooldown_retry_after_invalid',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -240,6 +248,8 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   embed_empty: [EmbedEmpty, 'invalid_request_error'],
   buttons_without_message: [ButtonsWithoutMessage, 'invalid_request_error'],
   button_already_used: [ButtonAlreadyUsed, 'invalid_request_error'],
+  cooldown_with_body: [CooldownWithBody, 'invalid_request_error'],
+  cooldown_retry_after_invalid: [CooldownRetryAfterInvalid, 'invalid_request_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {
@@ -255,7 +265,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 62-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 64-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });

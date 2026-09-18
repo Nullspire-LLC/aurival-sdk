@@ -16,6 +16,7 @@ Declare commands, call run(), and the SDK holds the socket::
 from __future__ import annotations
 
 from .bot import Bot
+from .cooldown import Cooldown
 from .embeds import Button, ButtonUsed, Embed
 from .errors import (
     CODE_CLASSES,
@@ -42,6 +43,8 @@ from .errors import (
     ButtonLabelTooLong,
     ButtonMissingField,
     ButtonsWithoutMessage,
+    CooldownRetryAfterInvalid,
+    CooldownWithBody,
     DuplicateButtonID,
     EmbedDescriptionTooLong,
     EmbedEmpty,
@@ -116,7 +119,7 @@ from .events import (
 )
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -159,6 +162,9 @@ __all__ = [
     "Chat",
     "Command",
     "Context",
+    "Cooldown",
+    "CooldownRetryAfterInvalid",
+    "CooldownWithBody",
     "DuplicateButtonID",
     "Embed",
     "EmbedDescriptionTooLong",
