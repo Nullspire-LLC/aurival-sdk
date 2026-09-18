@@ -19,7 +19,7 @@ import type {
   ReactionEventType,
 } from './events.js';
 import type { Logger } from './http.js';
-import { commandCooldownNotice } from './caps.js';
+import { CAP_TOO_MANY_ALIASES, MAX_ALIASES_PER_COMMAND, commandCooldownNotice } from './caps.js';
 import {
   Cooldown,
   buttonBucketKey,
@@ -128,6 +128,19 @@ export interface CommandOptions {
   description?: string | undefined;
   cooldown?: CooldownLike | undefined;
   onCooldown?: OnCooldownHook | undefined;
+  /**
+   * AMENDMENT-09 §2.1: alternate spellings that fire this same handler —
+   * `/r` and `/dice` for a command registered as `roll`, say. At most
+   * {@link MAX_ALIASES_PER_COMMAND}, checked locally at registration; every
+   * other rule an alias obeys (the name pattern, the reserved list,
+   * uniqueness) is the server's alone (§2.1) — this SDK reuses
+   * `invalid_command_name` for those exactly as the server does, by simply
+   * not re-validating them here and letting the sync refusal surface.
+   * Dispatch, the cooldown bucket and `onCooldown` all stay keyed on the
+   * canonical name; an alias only ever changes which typed token reaches
+   * that same handler (`ctx.invokedAs`, `Context`).
+   */
+  aliases?: readonly string[] | undefined;
 }
 
 /**
@@ -186,6 +199,18 @@ export async function ensurePaired(
 }
 
 /**
+ * One `PUT /v1/bots/{bot}/commands` row. `aliases` is optional and, when
+ * present, always non-empty — the caller omits the key entirely for a
+ * command with no aliases (AMENDMENT-09 §2.1: absent and `[]` mean the same
+ * thing, so there is no reason to send the empty spelling).
+ */
+export interface SyncPayloadEntry {
+  name: string;
+  description: string;
+  aliases?: string[];
+}
+
+/**
  * The one door to command sync, so the lane that syncs is always the lane that
  * reports. Both `Bot` call sites go through here.
  *
@@ -195,7 +220,7 @@ export async function ensurePaired(
 export async function syncCommandsAndReport(
   http: HttpClient,
   bot: string,
-  payload: Array<{ name: string; description: string }>,
+  payload: SyncPayloadEntry[],
   log: Logger,
 ): Promise<void> {
   reportConflicts(await http.syncCommands(bot, payload), log);
@@ -289,6 +314,7 @@ export class Bot {
     let handler: Handler | undefined;
     let cooldownLike: CooldownLike | undefined;
     let onCooldownHook: OnCooldownHook | undefined;
+    let aliasesLike: readonly string[] | undefined;
     if (typeof second === 'string') {
       description = second;
       handler = third;
@@ -298,12 +324,19 @@ export class Bot {
       description = second.description ?? '';
       cooldownLike = second.cooldown;
       onCooldownHook = second.onCooldown;
+      aliasesLike = second.aliases;
       handler = third;
     }
     if (handler === undefined) throw new AurivalError(`command(${name}) needs a handler`);
+    // AMENDMENT-09 §2.1: `[]` in every state but never `undefined` — a
+    // `Command` this SDK constructs always carries the list, even empty.
+    const aliases = aliasesLike !== undefined ? [...aliasesLike] : [];
+    if (aliases.length > MAX_ALIASES_PER_COMMAND) {
+      throw new AurivalError(CAP_TOO_MANY_ALIASES);
+    }
     const key = lookupKey(name);
     if (this.#registered.has(key)) status.duplicateCommand(name, this.#quiet);
-    const registered: Registered = { command: { name, description }, handler };
+    const registered: Registered = { command: { name, description, aliases }, handler };
     if (cooldownLike !== undefined) registered.cooldown = Cooldown.from(cooldownLike);
     if (onCooldownHook !== undefined) registered.onCooldown = onCooldownHook;
     this.#registered.set(key, registered);
@@ -472,10 +505,16 @@ export class Bot {
     bot: string,
     signal: AbortSignal,
   ): Promise<{ cancel: () => void } | null> {
-    const payload = [...this.#registered.values()].map((r) => ({
-      name: r.command.name,
-      description: r.command.description,
-    }));
+    const payload: SyncPayloadEntry[] = [...this.#registered.values()].map((r) => {
+      const entry: SyncPayloadEntry = { name: r.command.name, description: r.command.description };
+      // AMENDMENT-09 §2.1: the key is present only when the list is
+      // non-empty — absent and `[]` mean the same thing on this wire, so
+      // there is nothing to gain from sending the empty spelling.
+      if (r.command.aliases !== undefined && r.command.aliases.length > 0) {
+        entry.aliases = [...r.command.aliases];
+      }
+      return entry;
+    });
     try {
       await syncCommandsAndReport(http, bot, payload, this.#log);
       return null;
@@ -494,7 +533,7 @@ export class Bot {
   async #retrySync(
     http: HttpClient,
     bot: string,
-    payload: Array<{ name: string; description: string }>,
+    payload: SyncPayloadEntry[],
     first: RateLimitError,
     cancelled: AbortSignal,
     stopping: AbortSignal,
@@ -617,7 +656,11 @@ export class Bot {
     }
     const n = roundSeconds(refusedAfterSeconds);
     try {
-      await ctx.reply(commandCooldownNotice(ctx.command, n));
+      // AMENDMENT-09 §13.1: names the token the human actually typed, not
+      // the canonical spelling — the bucket is still the canonical
+      // command's (one bucket, all spellings); only the rendered sentence
+      // changes.
+      await ctx.reply(commandCooldownNotice(ctx.invokedAs, n));
     } catch (exc) {
       this.#log.error(
         `cooldown notice for ${JSON.stringify(ctx.command)} failed: ${exc instanceof Error ? (exc.stack ?? exc.message) : String(exc)}`,

@@ -50,6 +50,15 @@ export interface Chat {
 export interface Command {
   name: string;
   description: string;
+  /**
+   * AMENDMENT-09 §2.1: alternate spellings that resolve to this same
+   * command. Optional on the type (a caller building a bare `Command`
+   * literal, as `test/index.test.ts` does, need not supply it), but every
+   * `Command` the SDK itself constructs at registration sets it to `[]`
+   * when none were given — never `undefined` there. Mirrors Python's
+   * `aliases: tuple[str, ...] = ()`.
+   */
+  aliases?: readonly string[];
 }
 
 /**
@@ -72,6 +81,14 @@ export interface Message {
   buttons: Button[];
   /** `null` when the wire omits the key, sends `null`, or the message never carried a button. */
   button_used: ButtonUsed | null;
+  /**
+   * AMENDMENT-09 §4.2: the member whose presses this card's buttons accept,
+   * or `null` when the card carries no lock. Camel-cased (unlike this
+   * interface's other wire-mirrored fields) because `for_user` is public
+   * SDK surface, not merely a decoded record (§13.4 point 13). `null` when
+   * the wire omits `for_user` or sends `null` — never `undefined`.
+   */
+  forUser: string | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -148,6 +165,7 @@ function messageFromWire(d: Record<string, unknown>): Message {
   else if (typeof rawSender === 'string' && rawSender !== '')
     sender = { id: rawSender, handle: '', name: '' };
   else sender = null;
+  const forUser = d['for_user'];
   return {
     id: asString(d['id']),
     text: asString(d['text']),
@@ -157,6 +175,7 @@ function messageFromWire(d: Record<string, unknown>): Message {
     embeds: embedsFromWire(d['embeds']),
     buttons: buttonsFromWire(d['buttons']),
     button_used: buttonUsedFromWire(d['button_used']),
+    forUser: typeof forUser === 'string' ? forUser : null,
   };
 }
 
@@ -171,6 +190,7 @@ function messageFromRef(id: string): Message {
     embeds: [],
     buttons: [],
     button_used: null,
+    forUser: null,
   };
 }
 
@@ -225,6 +245,12 @@ function mentionEntry(m: MentionLike): { user: string } {
   return { user: (m as { user: string }).user };
 }
 
+/** Accepts either a `User` or a raw `usr_…` id string (D21) — the one place
+ * every `forUser` door in this file resolves to a wire id. */
+function userRefId(u: User | string): string {
+  return typeof u === 'string' ? u : u.id;
+}
+
 /** What `reply()` takes besides the text: the card to hang on the message. */
 export interface ReplyOptions {
   embeds?: ReadonlyArray<EmbedLike>;
@@ -237,6 +263,40 @@ export interface ReplyOptions {
    * attaches one. Refused, before the round trip, if `per` exceeds 60s.
    */
   buttonCooldown?: CooldownOption;
+  /**
+   * AMENDMENT-09 §4: lock this card's buttons to one member — nobody else's
+   * press is accepted, though everyone still sees the card (§1). A `User`
+   * or a bare `usr_…` id, either way serialised to the id (D21). On a
+   * CREATE, `undefined` and `null` behave identically — there is nothing to
+   * inherit or clear yet — so BOTH omit `for_user` from the wire entirely,
+   * keeping every existing `send()`/`reply()` byte-identical (D22 names no
+   * implicit "whoever invoked this"; pass an explicit id).
+   */
+  forUser?: User | string | null;
+}
+
+/**
+ * `ReplyOptions.forUser`'s CREATE-time rule: `undefined` and `null` both
+ * omit `for_user` from the wire (§4.3 is about editing an existing card,
+ * which a `send`/`reply` never is), so both collapse to `undefined` here —
+ * `http.sendMessage` writes the key only when it is non-empty.
+ */
+function forUserIdForCreate(forUser: User | string | null | undefined): string | undefined {
+  if (forUser === undefined || forUser === null) return undefined;
+  return userRefId(forUser);
+}
+
+/**
+ * `EditInit.forUser`'s tri-state rule (§4.3), shared by `edit()` and
+ * `ack()`: absent -> `undefined` (the wire key is left off, the lock is
+ * INHERITED); explicit `null` -> `null` (written through, the lock is
+ * CLEARED); a `User`/id -> that id (the lock MOVES). Unlike `forUserIdForCreate`,
+ * `undefined` and `null` are deliberately NOT the same value here.
+ */
+function forUserPart(forUser: User | string | null | undefined): string | null | undefined {
+  if (forUser === undefined) return undefined;
+  if (forUser === null) return null;
+  return userRefId(forUser);
 }
 
 /** `send()` takes the same, plus who the `@handle` tokens in `text` point at. */
@@ -289,6 +349,14 @@ export interface EditInit {
   text?: string;
   embeds?: ReadonlyArray<EmbedLike> | null;
   buttons?: ReadonlyArray<ButtonLike> | null;
+  /**
+   * AMENDMENT-09 §4.3: the caller-lock, tri-state exactly like `embeds`/
+   * `buttons` above but with its own meanings — absent leaves the existing
+   * lock alone (INHERIT), `null` clears it (anyone may press again), and a
+   * `User`/id moves it to that member. A `User` and a bare `usr_…` id both
+   * serialise to the same id (D21).
+   */
+  forUser?: User | string | null;
 }
 
 /**
@@ -335,6 +403,7 @@ function cardParts(
     text: init.text,
     embeds: embedsPart(init.embeds),
     buttons: buttonsJson,
+    forUser: forUserPart(init.forUser),
   };
 }
 
@@ -367,9 +436,29 @@ function recordCardCooldown(
   http.cardCooldowns.record(messageId, { cardCooldown, byButtonId: buttonCooldowns });
 }
 
-/** True when none of the three parts is present — nothing for the server to do. */
+/**
+ * True when none of `text`, `embeds` or `buttons` is present — nothing for
+ * the server to do.
+ *
+ * `forUser` deliberately does NOT count. `nothing_to_edit`'s sentence is
+ * `an edit needs text, embeds or buttons` and AMENDMENT-09 leaves it
+ * byte-identical, so a body carrying only `for_user` is refused server-side
+ * too: `handleEditMessage` answers `CodeNothingToEdit` on `patch.Empty()`,
+ * which reads those three parts and not the lock
+ * (`backend-go/internal/botapi/messages_mutate.go:450`, re-read at
+ * origin/main f67c83f6c). Widening the local guard here would only turn a
+ * refusal the caller gets for free into a doomed round trip that comes back
+ * saying the same thing. Mirrors `sdk/python/aurival/events.py`'s
+ * `BaseContext.edit` precondition exactly (SDK-7).
+ *
+ * §12 step 16 — "the bot edits with `for_user: null`" — is satisfied by
+ * naming a part alongside the lock. Whether a lock-only edit should become
+ * legal is L1's call on `nothing_to_edit`, not this SDK's.
+ */
 function partsAreEmpty(parts: CardParts): boolean {
-  return parts.text === undefined && parts.embeds === undefined && parts.buttons === undefined;
+  return (
+    parts.text === undefined && parts.embeds === undefined && parts.buttons === undefined
+  );
 }
 
 /** Accepts either a `Chat` or a raw chat id string — Context actions take both. */
@@ -492,6 +581,7 @@ export class BaseContext {
       undefined,
       embeds,
       buttons,
+      forUserIdForCreate(options.forUser),
     );
     const message = messageFromWire(sent);
     if (buttons.length > 0) {
@@ -528,6 +618,7 @@ export class BaseContext {
       mentions,
       embeds,
       buttons,
+      forUserIdForCreate(options.forUser),
     );
     const message = messageFromWire(sent);
     if (buttons.length > 0) {
@@ -644,6 +735,7 @@ export class BaseContext {
 
 export interface ContextInit extends BaseInit {
   command: string;
+  invokedAs: string;
   arguments: string;
   sender: User;
   message: Message;
@@ -656,8 +748,18 @@ export interface ContextInit extends BaseInit {
  * without both.
  */
 export class Context extends BaseContext {
-  /** The command name as the server matched it, without the slash. */
+  /** The command name as the server matched it, without the slash — always
+   * the CANONICAL spelling, even when an alias was typed (AMENDMENT-09
+   * §2.4). Dispatch, the cooldown bucket, and `onCooldown` all key on this,
+   * never on `invokedAs`. */
   readonly command: string;
+  /**
+   * AMENDMENT-09 §2.4: the token the human actually typed, lowercased —
+   * `command` itself for a canonical call, an alias's spelling otherwise.
+   * Falls back to `command` when the wire omits `invoked_as` (a pre-deploy
+   * backend). The cooldown notice names THIS (§13.1), not `command`.
+   */
+  readonly invokedAs: string;
   /** Everything after the command name, untrimmed of its inner spaces. `''` when there was nothing. */
   readonly arguments: string;
   /** Who typed the command. */
@@ -668,6 +770,7 @@ export class Context extends BaseContext {
   constructor(init: ContextInit) {
     super(init);
     this.command = init.command;
+    this.invokedAs = init.invokedAs;
     this.arguments = init.arguments;
     this.sender = init.sender;
     this.message = init.message;
@@ -696,8 +799,14 @@ export class Context extends BaseContext {
     } else {
       message = EMPTY_MESSAGE;
     }
+    const command = asString(data['command']);
+    const invokedAsRaw = data['invoked_as'];
     return new Context({
-      command: asString(data['command']),
+      command,
+      // AMENDMENT-09 §2.4: absent or empty (a pre-deploy backend) falls
+      // back to the canonical command, so a canonical call has
+      // `invokedAs === command` on every server, old or new.
+      invokedAs: typeof invokedAsRaw === 'string' && invokedAsRaw !== '' ? invokedAsRaw : command,
       arguments: asString(data['arguments']),
       chat: chatFromWire(asRecord(data['chat']) ?? {}),
       sender: userField(data, 'sender'),

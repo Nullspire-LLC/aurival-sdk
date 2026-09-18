@@ -10,7 +10,7 @@ import math
 import signal
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, overload
@@ -19,7 +19,7 @@ import aiohttp
 
 from . import events as _events
 from .auth import Auth, KeyFile, machine_label, pair, resolve_host
-from .caps import COOLDOWN_COMMAND_NOTICE
+from .caps import CAP_TOO_MANY_ALIASES, COOLDOWN_COMMAND_NOTICE, MAX_ALIASES_PER_COMMAND
 from .cooldown import UNSET, Cooldown, CooldownSpec, resolve_subject, validate_button_cooldown
 from .errors import (
     AurivalAPIError,
@@ -193,11 +193,22 @@ class Bot:
         name: str,
         description: str = "",
         *,
+        aliases: Sequence[str] | None = None,
         cooldown: Cooldown | None = None,
         on_cooldown: CooldownHook | None = None,
     ) -> Callable[[Handler], Handler]:
         """Declare a command. The name is sent as written — the server is the
         validator (SDK-29), and it lowercases and trims before it checks.
+
+        `aliases` (AMENDMENT-09 §2.1) names other ways to call this command —
+        one handler, several spellings. Each token obeys exactly the rules a
+        name obeys, and the server is the validator there too (the same
+        `invalid_command_name` a bad name gets). The only check made here,
+        locally, before any network call, is the count: more than
+        `MAX_ALIASES_PER_COMMAND` raises with `caps.CAP_TOO_MANY_ALIASES`,
+        the same local-cap style `Bot.start()`'s `MAX_COMMANDS` check uses.
+        A handler registered with aliases still fires on `ctx.command`, the
+        canonical name — see `ctx.invoked_as` for which spelling was typed.
 
         `cooldown` (AMENDMENT-08 §2) attaches a `Cooldown` to this command —
         no default, none unless asked, and unbounded (a command cooldown
@@ -208,13 +219,16 @@ class Bot:
         returned handler is not touched, so it carries no `.on_cooldown`
         attribute — the kwarg here and `@bot.on_cooldown` are the only two
         doors."""
+        alias_tuple = tuple(aliases) if aliases is not None else ()
+        if len(alias_tuple) > MAX_ALIASES_PER_COMMAND:
+            raise AurivalError(CAP_TOO_MANY_ALIASES)
 
         def decorate(fn: Handler) -> Handler:
             key = self._lookup_key(name)
             if key in self._registered:
                 self._status.duplicate_command(name)
             self._registered[key] = _Registered(
-                command=Command(name=name, description=description),
+                command=Command(name=name, description=description, aliases=alias_tuple),
                 handler=fn,
                 cooldown=cooldown,
                 on_cooldown=on_cooldown,
@@ -487,10 +501,18 @@ class Bot:
         """Sync on every run. A rate limit does NOT take the bot offline (SDK-35):
         command rows are durable, so we connect with whatever the server already
         has and land the sync in the background."""
-        payload = [
-            {"name": r.command.name, "description": r.command.description}
-            for r in self._registered.values()
-        ]
+        payload: list[dict[str, object]] = []
+        for r in self._registered.values():
+            entry: dict[str, object] = {
+                "name": r.command.name,
+                "description": r.command.description,
+            }
+            # AMENDMENT-09 §2.1: absent and `[]` mean the same thing on the
+            # wire, so the key is omitted rather than sent empty — matching
+            # `send_message`'s own rule for `mentions`/`embeds`/`buttons`.
+            if r.command.aliases:
+                entry["aliases"] = list(r.command.aliases)
+            payload.append(entry)
         try:
             self._report_conflicts(await http.sync_commands(bot, payload))
             return None
@@ -506,7 +528,7 @@ class Bot:
         self,
         http: HttpClient,
         bot: str,
-        payload: list[dict[str, str]],
+        payload: list[dict[str, object]],
         first: RateLimitError,
     ) -> None:
         delay = first.retry_after or 60.0
@@ -694,7 +716,12 @@ class Bot:
                 await self._call_error_hook(exc, ctx)
             return
         n = max(1, math.ceil(retry_after))
-        await ctx.reply(COOLDOWN_COMMAND_NOTICE.format(name=registered.command.name, n=n))
+        # AMENDMENT-09 §13.1 (seat ruling): `{name}` renders the token the
+        # human actually typed, not the canonical registration — `/r` gets
+        # "Try /r again", never "Try /roll again". The bucket stays keyed on
+        # the canonical command regardless (unchanged above); only the
+        # rendered sentence changes.
+        await ctx.reply(COOLDOWN_COMMAND_NOTICE.format(name=ctx.invoked_as, n=n))
 
     # -- button press cooldown + dispatch (AMENDMENT-08 §3, §5) -------------
 

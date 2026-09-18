@@ -33,6 +33,7 @@ import {
   EmbedTitleTooLong,
   EmbedURLNotHTTPS,
   EmptyText,
+  ForUserNotMember,
   FrameInvalid,
   FrameTooLarge,
   IdempotencyKeyInvalid,
@@ -70,6 +71,7 @@ import {
   SessionSuperseded,
   SyncRateLimited,
   TextTooLong,
+  TooManyAliases,
   TooManyButtons,
   TooManyEmbedFields,
   TooManyEmbeds,
@@ -117,6 +119,9 @@ import {
 // `cooldown_retry_after_invalid` (both invalid_request_error, 400), taking
 // it to 64. Both SHIP AHEAD of the Go catalogue rows too, same authority as
 // `nothing_to_edit` above.
+// AMENDMENT-09 §8.1 then adds `too_many_aliases` and `for_user_not_member`
+// (both invalid_request_error, 400), taking it to 66. Both SHIP AHEAD of
+// the Go catalogue rows too, same authority as `nothing_to_edit` above.
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -182,6 +187,8 @@ const EXPECTED_CODES = [
   'button_already_used',
   'cooldown_with_body',
   'cooldown_retry_after_invalid',
+  'too_many_aliases',
+  'for_user_not_member',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -250,6 +257,8 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   button_already_used: [ButtonAlreadyUsed, 'invalid_request_error'],
   cooldown_with_body: [CooldownWithBody, 'invalid_request_error'],
   cooldown_retry_after_invalid: [CooldownRetryAfterInvalid, 'invalid_request_error'],
+  too_many_aliases: [TooManyAliases, 'invalid_request_error'],
+  for_user_not_member: [ForUserNotMember, 'invalid_request_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {
@@ -265,7 +274,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 64-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 66-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });

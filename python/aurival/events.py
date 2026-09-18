@@ -112,6 +112,11 @@ class MemberPage:
 class Command:
     name: str
     description: str
+    # AMENDMENT-09 §2.1/§2.2: alternative spellings for this one command, one
+    # handler. `()` (never `None`) when there are none — the tuple mirrors
+    # the wire's own empty-collection rule for `aliases` (R-2: an empty list
+    # is a real answer, not a second encoding of "absent").
+    aliases: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,6 +129,13 @@ class Message:
     embeds: list[Embed] = dataclasses.field(default_factory=list)
     buttons: list[Button] = dataclasses.field(default_factory=list)
     button_used: ButtonUsed | None = None
+    # AMENDMENT-09 §4.2: the `usr_…` id of the member this card's buttons are
+    # locked to, or `None` on a card nobody locked. Nullable, always present
+    # on the wire (never a slim variant) — parsed here from a key that is
+    # `null` or absent identically (§4.2: "always present" is the wire's
+    # promise, not a promise every fixture in this SDK's tests bothers to
+    # set).
+    for_user: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -204,12 +216,21 @@ def _message_from_ref(v: object) -> Message | None:
             embeds=[],
             buttons=[],
             button_used=None,
+            for_user=None,
         )
     return None
 
 
 _EMPTY_MESSAGE = Message(
-    id="", text="", sent_at="", sender=None, reply_to=None, embeds=[], buttons=[], button_used=None
+    id="",
+    text="",
+    sent_at="",
+    sender=None,
+    reply_to=None,
+    embeds=[],
+    buttons=[],
+    button_used=None,
+    for_user=None,
 )
 
 
@@ -309,6 +330,26 @@ def _ref_id(x: object) -> str:
     return x if isinstance(x, str) else x.id  # type: ignore[attr-defined]
 
 
+def _for_user_ref(for_user: User | str) -> str:
+    """AMENDMENT-09 §12 D21: `for_user` accepts a `User` (`ctx.sender` is
+    typed `User`, events.py:602) or a bare id string; the wire always gets
+    the id. Reuses `_ref_id`, which already accepts either shape."""
+    return _ref_id(for_user)
+
+
+def _for_user_part(for_user: User | str | Omitted | None) -> str | Omitted | None:
+    """`edit`/`ack`'s tri-state for `for_user` (§4.3): `OMITTED` (the
+    default) means the caller never named it, so the key is left off the
+    wire and the stored lock is inherited unchanged. An explicit `None`
+    means "clear the lock" and goes out as `"for_user": null`. A `User` or
+    id string moves the lock to that member."""
+    if isinstance(for_user, Omitted):
+        return OMITTED
+    if for_user is None:
+        return None
+    return _for_user_ref(for_user)
+
+
 def _mention_entry(m: object) -> dict[str, str]:
     if isinstance(m, Mention):
         return dict(m.entry)
@@ -335,6 +376,7 @@ def _message_from_wire(d: dict[str, object]) -> Message:
     sent_at = d.get("sent_at")
     if not isinstance(sent_at, str):
         sent_at = d.get("created_at")
+    for_user = d.get("for_user")
     return Message(
         id=str(d.get("id", "")),
         text=str(d.get("text", "")),
@@ -344,6 +386,7 @@ def _message_from_wire(d: dict[str, object]) -> Message:
         embeds=_embeds_from_wire(d.get("embeds")),
         buttons=_buttons_from_wire(d.get("buttons")),
         button_used=_button_used_from_wire(d.get("button_used")),
+        for_user=for_user if isinstance(for_user, str) else None,
     )
 
 
@@ -373,6 +416,7 @@ class BaseContext:
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
         button_cooldown: CooldownSpec = UNSET,
+        for_user: User | str | None = None,
     ) -> Message:
         """Send `text` to this chat, quoting the message the event was about
         when it carried one (BA-R27, reversing SDK-30) — `ctx.reply()` in a
@@ -388,6 +432,11 @@ class BaseContext:
         it unset to inherit the bot's default, pass `None` to disable it for
         this card, or pass a `Cooldown`. Bounded to 60 seconds, validated
         before the round trip.
+
+        `for_user` (AMENDMENT-09 §4) locks this card's buttons to one member
+        — a `User` or a bare `usr_…` id. `None` (the default) sends no key: a
+        create has nothing to inherit or clear, so this is a plain optional,
+        not the tri-state `edit`/`ack` carry.
 
         A fresh `Idempotency-Key` per call, reused across that call's retries
         by `HttpClient.request` itself.
@@ -409,6 +458,8 @@ class BaseContext:
         )
         if serialised_buttons:
             body["buttons"] = serialised_buttons
+        if for_user is not None:
+            body["for_user"] = _for_user_ref(for_user)
         _require_something_to_say(text, serialised_embeds, serialised_buttons)
         response = await self._http.request(
             "POST",
@@ -429,6 +480,7 @@ class BaseContext:
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
         button_cooldown: CooldownSpec = UNSET,
+        for_user: User | str | None = None,
     ) -> Message:
         """Post `text` to any chat the bot is in — `ctx.chat` or another one —
         as a plain message, never quoting. Pass `mentions` to @-mention
@@ -441,7 +493,11 @@ class BaseContext:
 
         `button_cooldown` is the card-level cooldown every button on this
         card inherits unless it names its own — same tri-state rule as
-        `reply()`'s (AMENDMENT-08 §3)."""
+        `reply()`'s (AMENDMENT-08 §3).
+
+        `for_user` (AMENDMENT-09 §4) locks this card's buttons to one member
+        — a `User` or a bare `usr_…` id. `None` (the default) sends no key,
+        same plain-optional rule as `reply()`'s."""
         entries = [_mention_entry(m) for m in mentions] if mentions is not None else None
         serialised_embeds = serialise_embeds(embeds)
         resolved_buttons, serialised_buttons = _resolve_and_validate_buttons(
@@ -455,6 +511,7 @@ class BaseContext:
             mentions=entries,
             embeds=serialised_embeds,
             buttons=serialised_buttons,
+            for_user=_for_user_ref(for_user) if for_user is not None else None,
         )
         message = _message_from_wire(response)
         _record_button_cooldowns(self._http, message.id, button_cooldown, resolved_buttons)
@@ -493,6 +550,7 @@ class BaseContext:
         *,
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
+        for_user: User | str | Omitted | None = OMITTED,
     ) -> Message:
         """Replace part of a message the bot sent — `ctx.edit(sent,
         "corrected")` where `sent` is what `reply()` or `send()` returned, or
@@ -509,6 +567,11 @@ class BaseContext:
         edit whose merged result has nothing left in it is refused as empty.
         Naming none of the three is refused here, before the round trip.
 
+        `for_user` (AMENDMENT-09 §4.3) is tri-state: leave it unset (the
+        default, `OMITTED`) to inherit whatever lock the card already has,
+        pass `None` to clear the lock so the card opens to everyone, or pass
+        a `User`/id to move the lock to that member.
+
         There is no `button_cooldown` parameter here — AMENDMENT-08 §3 names
         `send()` as the card-level attachment point. When `buttons` replaces
         the row, each button's own `Button(cooldown=)` still carries through
@@ -522,6 +585,7 @@ class BaseContext:
             text,
             embeds=_embeds_part(embeds),
             buttons=_buttons_part(buttons),
+            for_user=_for_user_part(for_user),
         )
         message = _message_from_wire(response)
         _record_button_cooldowns(self._http, message.id, UNSET, resolved_buttons)
@@ -595,12 +659,20 @@ class Context(BaseContext):
         arguments: str = "",
         sender: User | None = None,
         message: Message | None = None,
+        invoked_as: str = "",
     ) -> None:
         super().__init__(event=event, http=http, chat=chat)
         self.command = command
         self.arguments = arguments
         self.sender: User = sender if sender is not None else _user_from_wire({})
         self.message: Message = message if message is not None else _EMPTY_MESSAGE
+        # AMENDMENT-09 §2.4: the token the human actually typed, lowercased —
+        # `roll` for a canonical call, `r` when `/r` resolved as an alias.
+        # `command` stays canonical always; this is additive. Falls back to
+        # `command` when the wire omits the key (a pre-deploy backend, or a
+        # fixture that predates this field), so a canonical call always has
+        # `ctx.command == ctx.invoked_as`.
+        self.invoked_as: str = invoked_as or command
 
     def _quotes(self) -> str | None:
         return self.message.id or None
@@ -627,6 +699,7 @@ class Context(BaseContext):
             chat=_chat_field(data),
             sender=_user_field(data, "sender"),
             message=message,
+            invoked_as=str(data.get("invoked_as") or ""),
             event=event,
             http=http,
         )
@@ -711,6 +784,7 @@ class ButtonContext(BaseContext):
         *,
         embeds: list[EmbedLike] | None = None,
         buttons: list[ButtonLike] | None = None,
+        for_user: User | str | Omitted | None = OMITTED,
     ) -> None:
         """Acknowledge the button press — `POST /v1/interactions/{id}/ack`,
         204 no body. The interaction id sent is `self.interaction` verbatim,
@@ -726,6 +800,12 @@ class ButtonContext(BaseContext):
         `ctx.ack()` with no arguments sends no body at all and is
         byte-identical to what 0.5.0 sent.
 
+        `for_user` (AMENDMENT-09 §4.3) is the same tri-state `edit()` takes:
+        `OMITTED` (the default) inherits the card's existing lock, `None`
+        clears it, and a `User`/id moves it. Note `ButtonContext` itself
+        exposes no `for_user` — the presser always IS the locked user, so
+        there is nothing to read back (§6.1 D20); this parameter only writes.
+
         No `button_cooldown` parameter, same reasoning as `edit()`'s: when
         `buttons` replaces the row, each button's own `Button(cooldown=)`
         still carries through to AMENDMENT-08's lookup table, at `UNSET`
@@ -738,6 +818,7 @@ class ButtonContext(BaseContext):
             text,
             embeds=_embeds_part(embeds),
             buttons=_buttons_part(buttons),
+            for_user=_for_user_part(for_user),
         )
         _record_button_cooldowns(self._http, self.message.id, UNSET, resolved_buttons)
 

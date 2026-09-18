@@ -313,6 +313,7 @@ describe('Context.reply', () => {
       embeds: [],
       buttons: [],
       button_used: null,
+      forUser: null,
     });
     expect(requests).toHaveLength(1);
     const req = requests[0];
@@ -557,6 +558,7 @@ describe('contextFor: one context class per event family (BA-R68)', () => {
       embeds: [],
       buttons: [],
       button_used: null,
+      forUser: null,
     });
     expect(ctx.sender).toEqual({ id: 'user_3', handle: 'reactor', name: 'Reactor' });
   });
@@ -881,6 +883,7 @@ describe('Context actions', () => {
       embeds: [],
       buttons: [],
       button_used: null,
+      forUser: null,
     };
     await ctx.delete(message);
     await ctx.react(message, '\u{1F44D}');

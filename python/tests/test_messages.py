@@ -338,7 +338,9 @@ async def test_bare_ack_posts_to_the_interaction_id_verbatim() -> None:
 
 def test_edit_signature_is_pinned_to_amendment_07() -> None:
     params = list(inspect.signature(Context.edit).parameters.values())
-    assert [p.name for p in params] == ["self", "msg", "text", "embeds", "buttons"]
+    # AMENDMENT-09 §4.3 adds `for_user`, keyword-only, tri-state (§4.1-D21):
+    # the pin grows by one name rather than being replaced.
+    assert [p.name for p in params] == ["self", "msg", "text", "embeds", "buttons", "for_user"]
     kinds = {p.name: p.kind for p in params}
     assert kinds["msg"] is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert kinds["text"] is inspect.Parameter.POSITIONAL_OR_KEYWORD, (
@@ -347,21 +349,31 @@ def test_edit_signature_is_pinned_to_amendment_07() -> None:
     )
     assert kinds["embeds"] is inspect.Parameter.KEYWORD_ONLY
     assert kinds["buttons"] is inspect.Parameter.KEYWORD_ONLY
+    assert kinds["for_user"] is inspect.Parameter.KEYWORD_ONLY
     defaults = {p.name: p.default for p in params if p.default is not inspect.Parameter.empty}
-    assert defaults == {"text": None, "embeds": None, "buttons": None}, (
-        "`None` must mean 'not present' on all three (§9); a mutable or sentinel default here "
-        "would give the three-state rule a fourth state"
+    assert defaults["text"] is None
+    assert defaults["embeds"] is None
+    assert defaults["buttons"] is None
+    assert defaults["for_user"] is http.OMITTED, (
+        "`for_user` defaults to OMITTED, not None — None already means 'clear the lock' (§4.3)"
     )
 
 
 def test_ack_signature_is_pinned_to_amendment_07() -> None:
     params = list(inspect.signature(ButtonContext.ack).parameters.values())
-    assert [p.name for p in params] == ["self", "text", "embeds", "buttons"]
+    # AMENDMENT-09 §4.3 adds `for_user`, same tri-state as `edit`'s.
+    assert [p.name for p in params] == ["self", "text", "embeds", "buttons", "for_user"]
     kinds = {p.name: p.kind for p in params}
     assert kinds["text"] is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert kinds["embeds"] is inspect.Parameter.KEYWORD_ONLY
     assert kinds["buttons"] is inspect.Parameter.KEYWORD_ONLY
+    assert kinds["for_user"] is inspect.Parameter.KEYWORD_ONLY
     defaults = {p.name: p.default for p in params if p.default is not inspect.Parameter.empty}
-    assert defaults == {"text": None, "embeds": None, "buttons": None}, (
-        "every argument optional, so `ctx.ack()` stays the zero-argument call 0.5.0 shipped"
+    assert defaults["text"] is None
+    assert defaults["embeds"] is None
+    assert defaults["buttons"] is None
+    assert defaults["for_user"] is http.OMITTED
+    assert "for_user" not in {"text", "embeds", "buttons"}, (
+        "every pre-existing argument stays optional, so `ctx.ack()` stays the zero-argument "
+        "call 0.5.0 shipped"
     )

@@ -179,6 +179,33 @@ class CooldownWithBody(InvalidRequestError):
     """
 
 
+class TooManyAliases(InvalidRequestError):
+    """`too_many_aliases`: a command registration named more than
+    `caps.MAX_ALIASES_PER_COMMAND` aliases (AMENDMENT-09 §2.1). The server
+    also refuses this at sync time, whole-sync; the SDK refuses it first, at
+    registration, before any network call, with the same sentence
+    (`caps.CAP_TOO_MANY_ALIASES`).
+
+    Ships ahead of its Go row on AMENDMENT-09 §8.1's authority — same bet
+    `CooldownWithBody`/`NothingToEdit`/`TooManyProblems` made and won: L1 has
+    not landed `errors_v1.go`'s entry yet, and landing it later is a no-op
+    here.
+    """
+
+
+class ForUserNotMember(InvalidRequestError):
+    """`for_user_not_member`: a `for_user` on a send, edit or ack named
+    someone who is not a live member of that chat (AMENDMENT-09 §4.1). The
+    same refusal answers a nonexistent `usr_…` id and a real user who simply
+    is not in the chat — R-8 forbids telling the two apart, since any
+    daylight would let a bot probe an arbitrary id and learn whether the
+    account exists.
+
+    Ships ahead of its Go row on AMENDMENT-09 §8.1's authority; see
+    `TooManyAliases`.
+    """
+
+
 class CooldownRetryAfterInvalid(InvalidRequestError):
     """`cooldown_retry_after_invalid`: a `cooldown.retry_after_ms` on a
     button-press ack was not a whole number of milliseconds between the
@@ -440,6 +467,9 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     # AMENDMENT-08 §8: no wire sender at HEAD. See CooldownWithBody.
     "cooldown_with_body": CooldownWithBody,
     "cooldown_retry_after_invalid": CooldownRetryAfterInvalid,
+    # AMENDMENT-09 §8.1: no wire sender at HEAD. See TooManyAliases/ForUserNotMember.
+    "too_many_aliases": TooManyAliases,
+    "for_user_not_member": ForUserNotMember,
 }
 
 

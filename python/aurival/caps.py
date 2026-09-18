@@ -86,3 +86,16 @@ CAP_COOLDOWN_RETRY_AFTER_INVALID = (
     "a cooldown retry_after_ms is a whole number of milliseconds between "
     f"{MIN_COOLDOWN_RETRY_AFTER_MS} and {MAX_COOLDOWN_RETRY_AFTER_MS}"
 )
+
+# AMENDMENT-09 §8.1. Both rows ship ahead of their Go row on the amendment's
+# own authority — the same bet `CAP_COOLDOWN_WITH_BODY` and
+# `CAP_COOLDOWN_RETRY_AFTER_INVALID` made and won for AMENDMENT-08: verified
+# absent from `errors_v1.go` on origin/main at 12fa7874c, and landing the Go
+# row later is a no-op here. `CAP_TOO_MANY_ALIASES` is RENDERED, not a
+# `{max}` template — same convention as `CAP_LINK_URL_TOO_LONG` above — and
+# `CAP_FOR_USER_NOT_MEMBER` carries no placeholder at all; both must stay
+# byte-identical to `sdk/js/src/caps.ts` and to `errors_v1.go` once L1 lands
+# its row.
+MAX_ALIASES_PER_COMMAND = 3
+CAP_TOO_MANY_ALIASES = f"a command declares at most {MAX_ALIASES_PER_COMMAND} aliases"
+CAP_FOR_USER_NOT_MEMBER = "for_user must name a member of this chat"

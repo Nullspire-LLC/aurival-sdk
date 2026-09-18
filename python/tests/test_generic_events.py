@@ -59,6 +59,7 @@ class _StubHttp:
         *,
         embeds: object = http.OMITTED,
         buttons: object = http.OMITTED,
+        for_user: object = http.OMITTED,
     ) -> dict:
         # AMENDMENT-07 §2 widened the real method; this stub mirrors it so the
         # delegation test keeps testing delegation rather than the arity. The
@@ -87,6 +88,7 @@ class _StubHttp:
         mentions=None,
         embeds=None,
         buttons=None,
+        for_user: str | None = None,
     ) -> dict:
         self.calls.append(("send_message", chat, text, mentions, embeds, buttons))
         return {"id": "msg_new"}
@@ -98,6 +100,7 @@ class _StubHttp:
         *,
         embeds: object = http.OMITTED,
         buttons: object = http.OMITTED,
+        for_user: object = http.OMITTED,
     ) -> dict:
         self.calls.append(("ack_interaction", interaction))
         return {}

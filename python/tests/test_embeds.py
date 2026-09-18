@@ -96,6 +96,7 @@ class _RecordingHttp:
         mentions=None,
         embeds=None,
         buttons=None,
+        for_user: str | None = None,
     ) -> dict:
         self.sent.append(
             {
@@ -115,6 +116,7 @@ class _RecordingHttp:
         *,
         embeds: object = http.OMITTED,
         buttons: object = http.OMITTED,
+        for_user: object = http.OMITTED,
     ) -> dict:
         # AMENDMENT-07 §3 gave ack an optional body; this stub mirrors the new
         # arity. What each part puts on the wire is pinned in test_messages.py.

@@ -111,3 +111,20 @@ export const MAX_COOLDOWN_RETRY_AFTER_MS = 60000;
 
 export const CAP_COOLDOWN_WITH_BODY = 'a cooldown ack carries no text, embeds or buttons';
 export const CAP_COOLDOWN_RETRY_AFTER_INVALID = `a cooldown retry_after_ms is a whole number of milliseconds between ${MIN_COOLDOWN_RETRY_AFTER_MS} and ${MAX_COOLDOWN_RETRY_AFTER_MS}`;
+
+/**
+ * AMENDMENT-09 §2.1/§4.1: two caps that ship ahead of their Go rows, on the
+ * same authority as `NOTHING_TO_EDIT` and `CAP_COOLDOWN_WITH_BODY` above —
+ * verified absent on `origin/main` at `12fa7874c`. `MAX_ALIASES_PER_COMMAND`
+ * bounds how many alternate spellings one command may declare;
+ * `CAP_TOO_MANY_ALIASES` is the sentence a caller sees when they exceed it,
+ * RENDERED (not a `{max}` template) exactly as `CAP_LINK_URL_TOO_LONG` is
+ * above. `CAP_FOR_USER_NOT_MEMBER` answers a `for_user` naming someone who
+ * is not a live member of the chat at write time — no placeholder, and the
+ * SAME sentence for a nonexistent id and a real non-member (§4.1, R-8: any
+ * daylight would be an existence oracle). Both are byte-identical to
+ * `sdk/python/aurival/caps.py`'s mirrors.
+ */
+export const MAX_ALIASES_PER_COMMAND = 3;
+export const CAP_TOO_MANY_ALIASES = `a command declares at most ${MAX_ALIASES_PER_COMMAND} aliases`;
+export const CAP_FOR_USER_NOT_MEMBER = 'for_user must name a member of this chat';

@@ -50,6 +50,7 @@ def _card_body(
     text: str | None,
     embeds: list[dict[str, object]] | Omitted | None,
     buttons: list[dict[str, object]] | Omitted | None,
+    for_user: str | Omitted | None = OMITTED,
 ) -> dict[str, object]:
     """The shared body builder for the two routes that take card parts.
 
@@ -57,7 +58,9 @@ def _card_body(
     absent (AMENDMENT-07 §2 makes `text` unclearable, so `None` has only the
     one meaning there) while `text=""` is a real, legal value on both routes.
     `embeds`/`buttons` write `null` on a real `None` and are left out only on
-    `OMITTED`.
+    `OMITTED`. `for_user` (AMENDMENT-09 §4.3) follows the same rule: `OMITTED`
+    keeps whatever lock the card already has, a real `None` clears it as
+    `"for_user": null`.
     """
     body: dict[str, object] = {}
     if text is not None:
@@ -66,6 +69,8 @@ def _card_body(
         body["embeds"] = embeds
     if not isinstance(buttons, Omitted):
         body["buttons"] = buttons
+    if not isinstance(for_user, Omitted):
+        body["for_user"] = for_user
     return body
 
 
@@ -270,6 +275,7 @@ class HttpClient:
         mentions: list[dict[str, str]] | None = None,
         embeds: list[dict[str, object]] | None = None,
         buttons: list[dict[str, object]] | None = None,
+        for_user: str | None = None,
     ) -> dict:
         body: dict[str, object] = {"chat": chat, "text": text}
         # CONTRACT-V1 §5.0.1: absent and `[]` mean exactly the same thing, so
@@ -281,6 +287,11 @@ class HttpClient:
             body["embeds"] = embeds
         if buttons:
             body["buttons"] = buttons
+        # AMENDMENT-09 §4.1: a create has nothing to inherit or clear, so
+        # `for_user` is a plain optional here — written only when truthy,
+        # same rule `mentions`/`embeds`/`buttons` already follow above.
+        if for_user:
+            body["for_user"] = for_user
         return await self.request(
             "POST",
             "/v1/messages",
@@ -303,13 +314,15 @@ class HttpClient:
         *,
         embeds: list[dict[str, object]] | Omitted | None = OMITTED,
         buttons: list[dict[str, object]] | Omitted | None = OMITTED,
+        for_user: str | Omitted | None = OMITTED,
     ) -> dict:
         """`PATCH /v1/messages/{msg}` with whichever card parts are present
         (AMENDMENT-07 §2). A part left `OMITTED` keeps whatever the message
         already has; `None` goes on the wire as `null` and clears it. Unlike
         `send_message`, an empty list is never a reason to drop the key — the
-        caller has already turned `embeds=[]` into the clearing `None`."""
-        body = _card_body(text, embeds, buttons)
+        caller has already turned `embeds=[]` into the clearing `None`.
+        `for_user` (AMENDMENT-09 §4.3) is the same three states."""
+        body = _card_body(text, embeds, buttons, for_user)
         return await self.request(
             "PATCH",
             f"/v1/messages/{msg}",
@@ -345,6 +358,7 @@ class HttpClient:
         *,
         embeds: list[dict[str, object]] | Omitted | None = OMITTED,
         buttons: list[dict[str, object]] | Omitted | None = OMITTED,
+        for_user: str | Omitted | None = OMITTED,
         cooldown_retry_after_ms: int | None = None,
     ) -> dict:
         """`POST /v1/interactions/{interaction}/ack`, optionally carrying the
@@ -352,6 +366,12 @@ class HttpClient:
         `None`, not `{}`, so a bare ack is byte-identical on the wire to the
         one 0.5.0 sent: `request` passes `json=body` straight to aiohttp, and
         `json=None` writes no entity body and no content-type.
+
+        `for_user` (AMENDMENT-09 §4.3, §8.4) is the same three states
+        `edit_message` takes. Sending it alongside `cooldown_retry_after_ms`
+        is refused server-side as `cooldown_with_body` — the SDK never does
+        that itself, since its own automatic cooldown ack never passes
+        `for_user`.
 
         `cooldown_retry_after_ms` (AMENDMENT-08 §5.1) is the SDK's own
         automatic cooldown ack, never a developer-facing parameter —
@@ -362,7 +382,7 @@ class HttpClient:
         if cooldown_retry_after_ms is not None:
             body: dict[str, object] = {"cooldown": {"retry_after_ms": cooldown_retry_after_ms}}
         else:
-            body = _card_body(text, embeds, buttons)
+            body = _card_body(text, embeds, buttons, for_user)
         return await self.request(
             "POST",
             f"/v1/interactions/{interaction}/ack",
@@ -376,7 +396,7 @@ class HttpClient:
             path += f"?cursor={urllib.parse.quote(cursor, safe='')}"
         return await self.request("GET", path)
 
-    async def sync_commands(self, bot: str, commands: list[dict[str, str]]) -> dict:
+    async def sync_commands(self, bot: str, commands: list[dict[str, object]]) -> dict:
         return await self.request(
             "PUT",
             f"/v1/bots/{bot}/commands",

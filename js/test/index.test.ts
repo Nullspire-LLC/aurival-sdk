@@ -25,6 +25,14 @@
  * error classes for the ack's two new refusals, `CooldownWithBody` and
  * `CooldownRetryAfterInvalid` — three more mirrored names, taking the count
  * to 103.
+ *
+ * AMENDMENT-09 (0.8.0) adds two more error classes, both mirrored in both
+ * SDKs: `TooManyAliases` (too many command aliases at registration, §2.1)
+ * and `ForUserNotMember` (a caller-locked card's `for_user` did not name a
+ * live member of the chat, §4.1). Command aliases (`Command.aliases`,
+ * `Context.invokedAs`) and caller-locked buttons (`for_user` on
+ * `send`/`reply`/`edit`/`ack`, `Message.forUser`) are otherwise additive
+ * fields on existing shapes, not new exports — taking the count to 105.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -109,6 +117,7 @@ const EXPECTED = [
   'Event',
   'EventContext',
   'EventType',
+  'ForUserNotMember',
   'FrameInvalid',
   'FrameTooLarge',
   'IdempotencyKeyInvalid',
@@ -153,6 +162,7 @@ const EXPECTED = [
   'SyncRateLimited',
   'TYPE_CLASSES',
   'TextTooLong',
+  'TooManyAliases',
   'TooManyButtons',
   'TooManyEmbedFields',
   'TooManyEmbeds',
@@ -183,8 +193,10 @@ describe('the public surface', () => {
   // AMENDMENT-08 then adds `Cooldown`, `CooldownWithBody` and
   // `CooldownRetryAfterInvalid`, all mirrored in both SDKs — 102 mirrored
   // names plus `MentionLike`, 103 total.
-  it('is exactly the 102 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(103);
+  // AMENDMENT-09 then adds `ForUserNotMember` and `TooManyAliases`, both
+  // mirrored in both SDKs — 104 mirrored names plus `MentionLike`, 105 total.
+  it('is exactly the 104 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(105);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -261,6 +273,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.7.0');
+    expect(aurival.version).toBe('0.8.0');
   });
 });

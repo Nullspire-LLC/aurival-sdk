@@ -53,6 +53,7 @@ from .errors import (
     EmbedURLNotHTTPS,
     EmbedURLWithoutTitle,
     EmptyText,
+    ForUserNotMember,
     FrameInvalid,
     FrameTooLarge,
     IdempotencyKeyInvalid,
@@ -87,6 +88,7 @@ from .errors import (
     SessionSuperseded,
     SyncRateLimited,
     TextTooLong,
+    TooManyAliases,
     TooManyButtons,
     TooManyEmbedFields,
     TooManyEmbeds,
@@ -119,7 +121,7 @@ from .events import (
 )
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -177,6 +179,7 @@ __all__ = [
     "Event",
     "EventContext",
     "EventType",
+    "ForUserNotMember",
     "FrameInvalid",
     "FrameTooLarge",
     "IdempotencyKeyInvalid",
@@ -216,6 +219,7 @@ __all__ = [
     "SessionSuperseded",
     "SyncRateLimited",
     "TextTooLong",
+    "TooManyAliases",
     "TooManyButtons",
     "TooManyEmbedFields",
     "TooManyEmbeds",

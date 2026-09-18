@@ -127,6 +127,23 @@ export class CooldownWithBody extends InvalidRequestError {}
 export class CooldownRetryAfterInvalid extends InvalidRequestError {}
 
 /**
+ * `too_many_aliases` (AMENDMENT-09 §8.1): a command declared more aliases
+ * than `MAX_ALIASES_PER_COMMAND` (`caps.ts`). SHIPS AHEAD of the Go row for
+ * the same reason `CooldownWithBody` did — L1 has not landed
+ * `errors_v1.go`'s entry yet.
+ */
+export class TooManyAliases extends InvalidRequestError {}
+
+/**
+ * `for_user_not_member` (AMENDMENT-09 §4.1): a `for_user` did not name a
+ * live member of the chat at write time — the identical answer for a
+ * nonexistent id and a real user who simply is not in the chat (R-8: any
+ * daylight would be an existence oracle). SHIPS AHEAD of the Go row for the
+ * same reason `CooldownWithBody` did.
+ */
+export class ForUserNotMember extends InvalidRequestError {}
+
+/**
  * `reaction_emoji_too_long` — the emoji argument to `react()`/`unreact()`
  * exceeded the server's >32-byte length clamp (AMENDMENT-04 A-2). This is a
  * size limit, not an allowlist check — there is no disallowed-emoji list to
@@ -316,6 +333,8 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   nothing_to_edit: NothingToEdit,
   cooldown_with_body: CooldownWithBody,
   cooldown_retry_after_invalid: CooldownRetryAfterInvalid,
+  too_many_aliases: TooManyAliases,
+  for_user_not_member: ForUserNotMember,
   reaction_emoji_too_long: ReactionEmojiTooLong,
   mention_not_member: MentionNotMember,
   mention_token_missing: MentionTokenMissing,

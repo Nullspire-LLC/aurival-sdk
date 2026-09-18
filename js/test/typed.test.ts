@@ -37,14 +37,23 @@ import {
 
 const bot = new Bot();
 
-bot.command('ping', async (ctx: Context) => {
-  const sender: User = ctx.sender;
-  const sent: Message = await ctx.reply('pong, ' + sender.name);
-  const edited: Message = await ctx.edit(sent, 'pong, again');
-  await ctx.delete(edited);
-  await ctx.react(ctx.message, '👍');
-  await ctx.withTyping(async () => undefined);
-});
+bot.command(
+  'ping',
+  { description: 'pings', aliases: ['p'] },
+  async (ctx: Context) => {
+    const sender: User = ctx.sender;
+    const invokedAs: string = ctx.invokedAs;
+    const sent: Message = await ctx.reply('pong, ' + sender.name + ' via ' + invokedAs, {
+      forUser: sender,
+    });
+    const edited: Message = await ctx.edit(sent, { text: 'pong, again', forUser: null });
+    const forUser: string | null = edited.forUser;
+    if (forUser !== null) await ctx.reply(forUser);
+    await ctx.delete(edited);
+    await ctx.react(ctx.message, '👍');
+    await ctx.withTyping(async () => undefined);
+  },
+);
 
 // Inferred: no annotation needed, the literal picks the class.
 bot.on('member.joined', async (ctx) => {
@@ -103,6 +112,17 @@ async function onlyReactions(ctx: ReactionContext): Promise<void> {
   await ctx.reply(ctx.emoji);
 }
 bot.on('button.pressed', onlyReactions);
+`;
+
+// AMENDMENT-09 §6.1/D20: ButtonContext deliberately has no `forUser` — the
+// presser always IS the locked user, and there is no route to resolve a
+// lock from a `button.pressed` event's bare message reference. Pinned here
+// (compiled through the real project tsconfig, not the ad-hoc one `check()`
+// builds) alongside the runtime pin in `forUser.test.ts`.
+const MISTYPED_BUTTON_FORUSER = `
+bot.on('button.pressed', async (ctx: ButtonContext) => {
+  console.log(ctx.forUser);
+});
 `;
 
 const dirs: string[] = [];
@@ -166,5 +186,11 @@ describe('the typed sample under tsc', () => {
     const result = check(TYPED_SAMPLE + MISTYPED_BUTTON_FAMILY);
     expect(result.ok).toBe(false);
     expect(result.output).toMatch(/ReactionContext|ButtonContext/);
+  }, 60_000);
+
+  it('rejects reading ctx.forUser on a ButtonContext (AMENDMENT-09 §6.1/D20 — pinned absence)', () => {
+    const result = check(TYPED_SAMPLE + MISTYPED_BUTTON_FORUSER);
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("'forUser'");
   }, 60_000);
 });

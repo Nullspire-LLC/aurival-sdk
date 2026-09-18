@@ -65,19 +65,23 @@ export interface RequestOptions {
 }
 
 /**
- * The three card parts an edit (AMENDMENT-07 §2) or an ack body (§3) may
+ * The four card parts an edit (AMENDMENT-07 §2) or an ack body (§3) may
  * carry, already serialised by the caller. `undefined` / an absent key means
- * "not present"; `null` means "clear this part"; an array is the replacement.
- * `text` has no `null` state — §2: "`text` is not clearable by `null`".
+ * "not present"; `null` means "clear this part"; an array (or, for
+ * `forUser`, an id string) is the replacement. `text` has no `null` state —
+ * §2: "`text` is not clearable by `null`". `forUser` (AMENDMENT-09 §4.3) is
+ * the newest of the four and follows `embeds`/`buttons`'s own absent/null
+ * split exactly: absent INHERITS the existing lock, `null` CLEARS it.
  */
 export interface CardParts {
   text?: string | undefined;
   embeds?: Record<string, unknown>[] | null | undefined;
   buttons?: Record<string, unknown>[] | null | undefined;
+  forUser?: string | null | undefined;
 }
 
 /**
- * Turns `CardParts` into the request body, preserving all three states: a key
+ * Turns `CardParts` into the request body, preserving all states: a key
  * whose value is `undefined` is left OFF the object (so `JSON.stringify` never
  * has to decide), and `null` is written through as `null`. `text: ''` survives
  * because the test is `!== undefined`, not truthiness.
@@ -87,6 +91,7 @@ function cardPartsBody(parts: CardParts): Record<string, unknown> {
   if (parts.text !== undefined) body['text'] = parts.text;
   if (parts.embeds !== undefined) body['embeds'] = parts.embeds;
   if (parts.buttons !== undefined) body['buttons'] = parts.buttons;
+  if (parts.forUser !== undefined) body['for_user'] = parts.forUser;
   return body;
 }
 
@@ -279,7 +284,10 @@ export class HttpClient {
   /**
    * `replyTo` is a `msg_` reference and is OMITTED when absent — the field is
    * optional on the wire (CONTRACT-V1 §5.0) and a `null` there is a
-   * `parameter_invalid` waiting to happen.
+   * `parameter_invalid` waiting to happen. `forUser` (AMENDMENT-09 §4.1) is
+   * plain-optional, not tri-state like `CardParts.forUser` — a create has
+   * nothing to inherit or clear, so it is written only when non-empty,
+   * exactly as `mentions`/`embeds`/`buttons` already are on this call.
    */
   async sendMessage(
     chat: string,
@@ -289,12 +297,14 @@ export class HttpClient {
     mentions?: Array<{ user: string }>,
     embeds?: Array<Record<string, unknown>>,
     buttons?: Array<Record<string, unknown>>,
+    forUser?: string,
   ): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = { chat, text };
     if (replyTo != null && replyTo !== '') body['reply_to'] = replyTo;
     if (mentions !== undefined && mentions.length > 0) body['mentions'] = mentions;
     if (embeds !== undefined && embeds.length > 0) body['embeds'] = embeds;
     if (buttons !== undefined && buttons.length > 0) body['buttons'] = buttons;
+    if (forUser !== undefined && forUser !== '') body['for_user'] = forUser;
     return this.request('POST', '/v1/messages', { body, idempotencyKey });
   }
 
@@ -395,7 +405,10 @@ export class HttpClient {
 
   async syncCommands(
     bot: string,
-    commands: Array<{ name: string; description: string }>,
+    // AMENDMENT-09 §2.1: `aliases` is optional and, when present, non-empty
+    // — the caller (`bot.ts`) omits the key entirely for a command with no
+    // aliases (§2.1: absent and `[]` mean the same thing on this wire).
+    commands: Array<{ name: string; description: string; aliases?: string[] }>,
   ): Promise<Record<string, unknown>> {
     return this.request('PUT', `/v1/bots/${bot}/commands`, {
       body: { commands },
