@@ -263,20 +263,20 @@ already uses:
 ```ts
 import { Embed, Button } from 'aurival';
 
-const embed = new Embed({ title: 'Trivia round 4', description: 'Which ocean is the deepest?', color: '#3E6E8E' })
-  .setAuthor('Quizbot', 'https://quizbot.example/q.png')
-  .setThumbnail('https://quizbot.example/t.png')
-  .addField('Players', '6', true)
-  .addField('Round', '4 of 10', true)
-  .setFooter('Answer within 30s');
+const embed = new Embed({ title: 'Title', description: 'Description. Plain text or markdown, under the title.' })
+  .setAuthor('Author line')
+  .addField('Field name', 'Field value', true)
+  .addField('Second field', 'Second value', true)
+  .setImage('https://bots.aurival.com/docs-assets/aurival-welcome-cover.jpg')
+  .setFooter('Footer text', 'https://bots.aurival.com/docs-assets/aurival-mascot-hero.png');
 
 const buttons = [
-  new Button({ label: 'Pacific', id: 'pacific', style: 'primary' }),
-  new Button({ label: 'Atlantic', id: 'atlantic', style: 'secondary' }),
-  new Button({ label: 'Indian', id: 'indian', style: 'secondary' }),
+  new Button({ label: 'Primary action', id: 'primary', style: 'primary' }),
+  new Button({ label: 'Secondary action', id: 'secondary', style: 'secondary' }),
+  new Button({ label: 'Danger action', id: 'danger', style: 'danger' }),
 ];
 
-await ctx.reply('Ready when you are.', { embeds: [embed], buttons });
+await ctx.reply({ embeds: [embed], buttons });
 ```
 
 A card earns its place when there is something to put on it: buttons, fields, an image. A reply
@@ -293,19 +293,20 @@ url throws, because a link button with nowhere to go is a dead pill:
 import { Button } from 'aurival';
 
 const buttons = [
-  Button.link({ label: 'Full lineup', url: 'https://aurival.com/spaces/deepcuts/lineup' }),
-  Button.link({ label: 'Set notes', url: 'https://example.com/notes' }),
-  new Button({ label: 'Remind me', id: 'remind', style: 'primary' }),
+  Button.link({ label: 'Opens aurival.com', url: 'https://aurival.com' }),
+  Button.link({ label: 'Opens the docs', url: 'https://bots.aurival.com' }),
+  new Button({ label: 'Primary action', id: 'primary', style: 'primary' }),
 ];
 
-await ctx.reply('Doors at 21:00.', { buttons });
+await ctx.reply('Two link buttons and a regular one, sharing one row.', { buttons });
 ```
 
 A link button never comes back to you: no `button.pressed` event, ever, and it never flips the
 row to used. It also stays tappable after a sibling is pressed, and while a sibling is still
 waiting on your `ack()` — the row greys out around it, the link does not. `id` still has to be
 there and still has to be unique in the message, and the SDK still slugs it from the label when
-you leave it out, so that `Set notes` pill gets `id: 'set-notes'` like any other button. Link
+you leave it out, so that `Opens the docs` pill gets `id: 'opens-the-docs'` like any other
+button. Link
 buttons count toward the five-button cap, and a message made only of link buttons is fine.
 
 A url is `https://` and at most 2048 characters, everywhere a url is a link target. A non-link
@@ -320,11 +321,11 @@ you cannot see is worse than an error you can.
 import { Button } from 'aurival';
 
 const buttons = [
-  new Button({ label: 'Maybe', id: 'maybe', style: 'secondary', emoji: '🤔' }),
-  new Button({ label: 'Remind me', id: 'remind', style: 'primary', emoji: '⏰' }),
+  new Button({ label: 'Secondary action', id: 'secondary', style: 'secondary', emoji: '🤔' }),
+  new Button({ label: 'Primary action', id: 'primary', style: 'primary', emoji: '⏰' }),
 ];
 
-await ctx.reply('Set starts in an hour.', { buttons });
+await ctx.reply('Two buttons, each with one emoji in front of the label.', { buttons });
 ```
 
 Exactly one unicode emoji, no custom emoji, no `:shortcode:`, no image url. The emoji does not
@@ -342,16 +343,14 @@ title tappable, and the third argument to `setAuthor` does the same for the auth
 import { Embed } from 'aurival';
 
 const embed = new Embed({
-  title: "Tonight's set",
-  description: 'Deep cuts only, and nothing after midnight.',
-  color: '#3E6E8E',
-  url: 'https://aurival.com/spaces/deepcuts',
+  title: 'A linked title',
+  description: 'The title and the author line below both open a url when tapped.',
+  url: 'https://aurival.com',
 })
-  .setAuthor('Deep Cuts', 'https://deepcuts.example/dc.png', 'https://aurival.com/u/deepcuts')
-  .setThumbnail('https://deepcuts.example/cover.jpg')
-  .setFooter('set by deepcuts', 'https://deepcuts.example/dc-small.png');
+  .setAuthor('Author line', 'https://bots.aurival.com/docs-assets/aurival-mascot-hero.png', 'https://aurival.com')
+  .setFooter('Footer text', 'https://bots.aurival.com/docs-assets/aurival-mascot-hero.png');
 
-await ctx.reply("Tonight's lineup.", { embeds: [embed] });
+await ctx.reply({ embeds: [embed] });
 ```
 
 Each of the three needs the thing it attaches to: a footer icon needs footer text, an embed url
@@ -369,13 +368,13 @@ as four asterisks and two words:
 import { Embed } from 'aurival';
 
 const embed = new Embed({
-  title: 'House rules',
+  title: 'Markdown in the description',
   description:
-    '**Deep cuts** only. No *requests* after the ~~third~~ second hour.\n' +
-    'Type `!queue` to see what is next.',
-}).addField('Set length', '3 hours', true);
+    '**Bold**, *italic*, ~~strikethrough~~ and `inline code` all render.\n' +
+    'Headings render as bold body text, not larger type.',
+}).addField('Field name', 'Field value', true);
 
-await ctx.reply('Welcome in.', { embeds: [embed] });
+await ctx.reply({ embeds: [embed] });
 ```
 
 Supported: bold, italic, bold-italic, strikethrough and inline code. Headings render as bold
@@ -427,8 +426,8 @@ A press comes back as a `button.pressed` event, handled the same way any other e
 ```ts
 bot.on('button.pressed', async (ctx) => {
   await ctx.ack();
-  if (ctx.button === 'pacific') {
-    await ctx.reply('Correct! The Pacific is deepest.');
+  if (ctx.button === 'primary') {
+    await ctx.reply('You pressed the primary button.');
   }
 });
 ```
@@ -437,7 +436,7 @@ The `ctx` there is a `ButtonContext`: `.chat`, `.user`, `.message`, `.button` (t
 when building it) and `.interaction`. Call `await ctx.ack()` exactly once per press — a button
 is single-use, and acking one a second time doesn't throw locally, the server 409s the request.
 
-The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
+The showcase bot runs every one of these cards live. The full set is in the
 [cookbook](https://bots.aurival.com/docs/cookbook).
 
 ## Buttons only the caller can press
@@ -447,7 +446,7 @@ before this existed. Pass `forUser` to `reply`, `send`, `edit` or `ack` to lock 
 member.
 
 ```ts
-await ctx.reply('Question 1 of 5', { buttons, forUser: ctx.sender });
+await ctx.reply('Locked to the caller', { buttons, forUser: ctx.sender });
 ```
 
 `forUser` takes a `User` (`ctx.sender` is one) or a bare `usr_…` id string. Either one
@@ -470,24 +469,22 @@ questions and must not silently unlock itself by leaving `forUser` out.
 A caller-only quiz, start to finish:
 
 ```ts
-import { Button } from 'aurival';
+import { Button, Embed } from 'aurival';
 
-bot.command('quiz', async (ctx) => {
-  await ctx.reply('Which planet is largest?', {
-    buttons: [
-      new Button({ label: 'Mars', style: 'secondary' }),
-      new Button({ label: 'Jupiter', style: 'secondary' }),
-    ],
+bot.command('locked', async (ctx) => {
+  const embed = new Embed({
+    title: 'Locked to the caller',
+    description: 'Everyone sees this card. Only the person who ran the command can press.',
+  });
+  await ctx.reply({
+    embeds: [embed],
+    buttons: [new Button({ label: 'Only the caller presses', id: 'only', style: 'primary' })],
     forUser: ctx.sender,
   });
 });
 
 bot.on('button.pressed', async (ctx) => {
-  const correct = ctx.button === 'jupiter';
-  const text = correct
-    ? 'Correct. Jupiter is about eleven Earths across.'
-    : 'Not quite. Jupiter is about eleven Earths across.';
-  await ctx.ack({ text, buttons: [] });
+  await ctx.ack({ text: 'Pressed.', buttons: [] });
 });
 ```
 
@@ -564,7 +561,7 @@ Override it where it belongs, and precedence is button, then card, then the bot 
 ```ts
 const bot = new Bot({ buttonCooldown: { rate: 1, per: 5 } }); // this bot's buttons
 await ctx.reply({ buttons, buttonCooldown: null });           // this card's buttons, off
-new Button({ label: 'Paint', cooldown: null });               // this one button, off
+new Button({ label: 'Primary action', cooldown: null });      // this one button, off
 ```
 
 A per-card or per-button cooldown gets its own buckets, keyed on the message, the button id and
@@ -685,31 +682,30 @@ Three states, one rule, on both doors:
 with all three left out throws `an edit needs text, embeds or buttons` before anything is sent,
 and the server answers the same sentence as `NothingToEdit`.
 
-A trivia round is the whole feature in one pair of handlers. Both cards earn their plate: the
-question card carries buttons, the result card carries a field.
+Pressing a button is the whole feature in one pair of handlers. Both cards earn their plate: the
+first card carries buttons, the replacement carries the result.
 
 ```ts
 import { Button, Embed } from 'aurival';
 
-bot.command('trivia', async (ctx) => {
-  await ctx.reply({
-    embeds: [new Embed({ title: 'Which planet is largest?' })],
-    buttons: [
-      new Button({ label: 'Mars', style: 'secondary' }),
-      new Button({ label: 'Jupiter', style: 'secondary' }),
-    ],
-  });
+bot.command('update', async (ctx) => {
+  const embed = new Embed({ title: 'Press a button', description: 'The card is replaced in place when you press one.' });
+  const buttons = [
+    new Button({ label: 'Press me, card updates', id: 'u1', style: 'primary' }),
+    new Button({ label: 'Or press me', id: 'u2', style: 'secondary' }),
+  ];
+  await ctx.reply({ embeds: [embed], buttons });
 });
 
 bot.on('button.pressed', async (ctx) => {
-  const correct = ctx.button === 'jupiter';
+  const which = ctx.button === 'u1' ? 'first' : 'second';
   const result = new Embed({
-    title: correct ? 'Jupiter' : 'Not quite',
-    description: 'Jupiter is about eleven Earths across.',
-  }).addField('Answered by', ctx.user.handle, true);
+    title: `You pressed the ${which} button`,
+    description: 'ack() replaced the card in place. Nothing else in the chat moved.',
+  });
   await ctx.ack({
     embeds: [result],
-    buttons: [new Button({ id: 'again', label: 'Play again' })],
+    buttons: [new Button({ label: 'Press again', id: 'again', style: 'primary' })],
   });
 });
 ```
@@ -724,7 +720,7 @@ on the id.
 outside a press:
 
 ```ts
-await ctx.edit(sent, { embeds: [new Embed({ title: 'Starting in 3…' })] });
+await ctx.edit(sent, { embeds: [new Embed({ title: 'Title' })] });
 await ctx.edit(sent, { buttons: [] });   // the row is gone, the plate stays
 ```
 

@@ -273,19 +273,19 @@ into `ctx.reply()` or `ctx.send()`:
 from aurival import Embed, Button
 
 embed = (
-    Embed(title="Trivia round 4", description="Which ocean is the deepest?", color="#3E6E8E")
-    .set_author("Quizbot", icon="https://quizbot.example/q.png")
-    .set_thumbnail("https://quizbot.example/t.png")
-    .add_field("Players", "6", inline=True)
-    .add_field("Round", "4 of 10", inline=True)
-    .set_footer("Answer within 30s")
+    Embed(title="Title", description="Description. Plain text or markdown, under the title.")
+    .set_author("Author line")
+    .add_field("Field name", "Field value", inline=True)
+    .add_field("Second field", "Second value", inline=True)
+    .set_image("https://bots.aurival.com/docs-assets/aurival-welcome-cover.jpg")
+    .set_footer("Footer text", icon="https://bots.aurival.com/docs-assets/aurival-mascot-hero.png")
 )
 buttons = [
-    Button("Pacific", id="pacific", style="primary"),
-    Button("Atlantic", id="atlantic", style="secondary"),
-    Button("Indian", id="indian", style="secondary"),
+    Button("Primary action", id="primary", style="primary"),
+    Button("Secondary action", id="secondary", style="secondary"),
+    Button("Danger action", id="danger", style="danger"),
 ]
-await ctx.reply("Ready when you are.", embeds=[embed], buttons=buttons)
+await ctx.reply(embeds=[embed], buttons=buttons)
 ```
 
 A card earns its place when there is something to put on it: buttons, fields, an image. A reply
@@ -302,18 +302,19 @@ url raises, because a link button with nowhere to go is a dead pill:
 from aurival import Button
 
 buttons = [
-    Button.link("Full lineup", "https://aurival.com/spaces/deepcuts/lineup"),
-    Button.link("Set notes", "https://example.com/notes"),
-    Button("Remind me", id="remind", style="primary"),
+    Button.link("Opens aurival.com", "https://aurival.com"),
+    Button.link("Opens the docs", "https://bots.aurival.com"),
+    Button("Primary action", id="primary", style="primary"),
 ]
-await ctx.reply("Doors at 21:00.", buttons=buttons)
+await ctx.reply("Two link buttons and a regular one, sharing one row.", buttons=buttons)
 ```
 
 A link button never comes back to you: no `button.pressed` event, ever, and it never flips the
 row to used. It also stays tappable after a sibling is pressed, and while a sibling is still
 waiting on your `ack()` — the row greys out around it, the link does not. `id` still has to be
 there and still has to be unique in the message, and the SDK still slugs it from the label when
-you leave it out, so `Button.link("Set notes", ...)` gets `id="set-notes"` like any other button.
+you leave it out, so `Button.link("Opens the docs", ...)` gets `id="opens-the-docs"` like any
+other button.
 Link buttons count toward the five-button cap, and a message made only of link buttons is fine.
 
 A url is `https://` and at most 2048 characters, everywhere a url is a link target. A non-link
@@ -328,10 +329,10 @@ you cannot see is worse than an error you can.
 from aurival import Button
 
 buttons = [
-    Button("Maybe", id="maybe", style="secondary", emoji="🤔"),
-    Button("Remind me", id="remind", style="primary", emoji="⏰"),
+    Button("Secondary action", id="secondary", style="secondary", emoji="🤔"),
+    Button("Primary action", id="primary", style="primary", emoji="⏰"),
 ]
-await ctx.reply("Set starts in an hour.", buttons=buttons)
+await ctx.reply("Two buttons, each with one emoji in front of the label.", buttons=buttons)
 ```
 
 Exactly one unicode emoji, no custom emoji, no `:shortcode:`, no image url. The emoji does not
@@ -350,20 +351,18 @@ from aurival import Embed
 
 embed = (
     Embed(
-        title="Tonight's set",
-        description="Deep cuts only, and nothing after midnight.",
-        color="#3E6E8E",
-        url="https://aurival.com/spaces/deepcuts",
+        title="A linked title",
+        description="The title and the author line below both open a url when tapped.",
+        url="https://aurival.com",
     )
     .set_author(
-        "Deep Cuts",
-        icon="https://deepcuts.example/dc.png",
-        url="https://aurival.com/u/deepcuts",
+        "Author line",
+        icon="https://bots.aurival.com/docs-assets/aurival-mascot-hero.png",
+        url="https://aurival.com",
     )
-    .set_thumbnail("https://deepcuts.example/cover.jpg")
-    .set_footer("set by deepcuts", icon="https://deepcuts.example/dc-small.png")
+    .set_footer("Footer text", icon="https://bots.aurival.com/docs-assets/aurival-mascot-hero.png")
 )
-await ctx.reply("Tonight's lineup.", embeds=[embed])
+await ctx.reply(embeds=[embed])
 ```
 
 Each of the three needs the thing it attaches to: a footer icon needs footer text, an embed url
@@ -381,13 +380,13 @@ as four asterisks and two words:
 from aurival import Embed
 
 embed = Embed(
-    title="House rules",
+    title="Markdown in the description",
     description=(
-        "**Deep cuts** only. No *requests* after the ~~third~~ second hour.\n"
-        "Type `!queue` to see what is next."
+        "**Bold**, *italic*, ~~strikethrough~~ and `inline code` all render.\n"
+        "Headings render as bold body text, not larger type."
     ),
-).add_field("Set length", "3 hours", inline=True)
-await ctx.reply("Welcome in.", embeds=[embed])
+).add_field("Field name", "Field value", inline=True)
+await ctx.reply(embeds=[embed])
 ```
 
 Supported: bold, italic, bold-italic, strikethrough and inline code. Headings render as bold
@@ -442,15 +441,15 @@ from aurival import ButtonContext
 @bot.on("button.pressed")
 async def on_press(ctx: ButtonContext):
     await ctx.ack()
-    if ctx.button == "pacific":
-        await ctx.reply("Correct! The Pacific is deepest.")
+    if ctx.button == "primary":
+        await ctx.reply("You pressed the primary button.")
 ```
 
 `ButtonContext` carries `.chat`, `.user`, `.message`, `.button` (the id you set when building
 it) and `.interaction`. Call `await ctx.ack()` exactly once per press — a button is single-use,
 and acking one a second time doesn't raise locally, the server 409s the request.
 
-The full set of showcase examples (trivia, giveaways, DJ bots, moderation reports…) is in the
+The showcase bot runs every one of these cards live. The full set is in the
 [cookbook](https://bots.aurival.com/docs/cookbook).
 
 ## Buttons only the caller can press
@@ -460,7 +459,7 @@ before this existed. Pass `for_user=` to `reply`, `send`, `edit` or `ack` to loc
 one member.
 
 ```python
-await ctx.reply("Question 1 of 5", buttons=buttons, for_user=ctx.sender)
+await ctx.reply("Locked to the caller", buttons=buttons, for_user=ctx.sender)
 ```
 
 `for_user` takes a `User` (`ctx.sender` is one) or a bare `usr_…` id string. Either one
@@ -483,26 +482,23 @@ questions and must not silently unlock itself by leaving `for_user` out.
 A caller-only quiz, start to finish:
 
 ```python
-from aurival import Button, ButtonContext, Context
+from aurival import Button, ButtonContext, Context, Embed
 
-@bot.command("quiz")
-async def quiz(ctx: Context) -> None:
+@bot.command("locked")
+async def locked(ctx: Context) -> None:
+    embed = Embed(
+        title="Locked to the caller",
+        description="Everyone sees this card. Only the person who ran the command can press.",
+    )
     await ctx.reply(
-        "Which planet is largest?",
-        buttons=[
-            Button("Mars", style="secondary"),
-            Button("Jupiter", style="secondary"),
-        ],
+        embeds=[embed],
+        buttons=[Button("Only the caller presses", id="only", style="primary")],
         for_user=ctx.sender,
     )
 
 @bot.on("button.pressed")
 async def answered(ctx: ButtonContext) -> None:
-    if ctx.button == "jupiter":
-        text = "Correct. Jupiter is about eleven Earths across."
-    else:
-        text = "Not quite. Jupiter is about eleven Earths across."
-    await ctx.ack(text, buttons=[])
+    await ctx.ack("Pressed.", buttons=[])
 ```
 
 `ButtonContext` carries no `for_user` field. The presser is always the locked user by
@@ -579,7 +575,7 @@ Override it where it belongs, and precedence is button, then card, then the bot 
 ```python
 bot = Bot(button_cooldown=Cooldown(1, 5.0))          # this bot's buttons
 await ctx.reply(buttons=[...], button_cooldown=None) # this card's buttons, off
-Button("Paint", cooldown=None)                       # this one button, off
+Button("Primary action", cooldown=None)              # this one button, off
 ```
 
 A per-card or per-button cooldown gets its own buckets, keyed on the message, the button id and
@@ -671,29 +667,29 @@ Three states, one rule, on both doors:
 with all three left out raises `ValueError("an edit needs text, embeds or buttons")` before
 anything is sent, and the server answers the same sentence as `NothingToEdit`.
 
-A trivia round is the whole feature in one pair of handlers. Both cards earn their plate: the
-question card carries buttons, the result card carries a field.
+Pressing a button is the whole feature in one pair of handlers. Both cards earn their plate: the
+first card carries buttons, the replacement carries the result.
 
 ```python
 from aurival import Button, ButtonContext, Embed
 
-@bot.command("trivia")
-async def trivia(ctx: Context) -> None:
-    await ctx.reply(
-        embeds=[Embed(title="Which planet is largest?")],
-        buttons=[
-            Button("Mars", style="secondary"),
-            Button("Jupiter", style="secondary"),
-        ],
-    )
+@bot.command("update")
+async def update(ctx: Context) -> None:
+    embed = Embed(title="Press a button", description="The card is replaced in place when you press one.")
+    buttons = [
+        Button("Press me, card updates", id="u1", style="primary"),
+        Button("Or press me", id="u2", style="secondary"),
+    ]
+    await ctx.reply(embeds=[embed], buttons=buttons)
 
 @bot.on("button.pressed")
 async def answered(ctx: ButtonContext) -> None:
-    result = Embed(title="Jupiter", description="Correct. It is about eleven Earths across.")
-    if ctx.button != "jupiter":
-        result = Embed(title="Not quite", description="Jupiter is about eleven Earths across.")
-    result.add_field("Answered by", ctx.user.handle, inline=True)
-    await ctx.ack(embeds=[result], buttons=[Button("Play again", id="again")])
+    which = "first" if ctx.button == "u1" else "second"
+    result = Embed(
+        title=f"You pressed the {which} button",
+        description="ack() replaced the card in place. Nothing else in the chat moved.",
+    )
+    await ctx.ack(embeds=[result], buttons=[Button("Press again", id="again", style="primary")])
 ```
 
 The ack and the replacement are one request. The question card becomes the result card in place,
@@ -706,7 +702,7 @@ on the id.
 a press:
 
 ```python
-await ctx.edit(sent, embeds=[Embed(title="Starting in 3…")])
+await ctx.edit(sent, embeds=[Embed(title="Title")])
 await ctx.edit(sent, buttons=[])   # the row is gone, the plate stays
 ```
 
