@@ -466,8 +466,9 @@ await ctx.reply("Locked to the caller", buttons=buttons, for_user=ctx.sender)
 serializes to the same id on the wire.
 
 Everyone still sees the card and its text. Only the press is gated: a non-caller's buttons
-render at `.56` opacity with no checkmark, are not tappable, and the app shows a `For {name}`
-hint under the row. A link button on a locked card stays pressable by anyone. It never
+render at `.56` opacity with no checkmark and are not tappable. Nothing is drawn under the
+row: the card never says who it is for, so write that into the embed footer yourself if you
+want it on the plate. A link button on a locked card stays pressable by anyone. It never
 round-trips to the server, so there is nothing for the lock to gate.
 
 A non-caller who presses anyway is refused by the server with a `403`, before anything is
