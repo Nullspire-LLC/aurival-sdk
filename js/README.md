@@ -353,6 +353,7 @@ const embed = new Embed({
   url: 'https://aurival.com',
 })
   .setAuthor('Author line', 'https://bots.aurival.com/docs-assets/aurival-mascot-hero.png', 'https://aurival.com')
+  .setThumbnail('https://bots.aurival.com/docs-assets/aurival-mascot-hero.png')
   .setFooter('Footer text', 'https://bots.aurival.com/docs-assets/aurival-mascot-hero.png');
 
 await ctx.reply({ embeds: [embed] });
@@ -750,6 +751,44 @@ changes shape.
 Two new error classes ship with it, `CooldownWithBody` and `CooldownRetryAfterInvalid`, both
 `InvalidRequestError`. You will not normally see either: the SDK builds the cooldown ack itself
 and refuses an out-of-range button cooldown where you write it.
+
+### Upgrading from 0.8.x
+
+0.9.0 adds new per-field and per-embed caps, and **one of them can break a card that worked on
+0.8.x**: none of these fields were length-limited before, so a card built past one of the new
+limits used to send successfully and now throws. `Embed.addField`, `setAuthor` and `setFooter`
+check length locally as of this version, before any round trip:
+
+- an embed field name is at most 256 characters
+- an embed field value is at most 1024 characters
+- an embed author name is at most 256 characters
+- an embed footer's text is at most 2048 characters
+- `setImage` and `setThumbnail` urls are at most 2048 characters (author and footer icons
+  stay uncapped)
+- the embeds on one message carry at most 6000 characters in total, summed across every
+  title, description, field name and value, author name and footer text — checked when the
+  message is sent, since it spans every embed, not one
+
+A card that never approaches these sizes is unaffected. One built past a limit now throws
+locally, with the same sentence the server used to send back as a 400 — the SDK catches it
+before the round trip instead of after. The server enforces the identical caps independently
+of SDK version, so a bot on an older SDK sees the 400 from the wire the moment this ships, not
+only on upgrade. Six matching error classes ship for the wire-error path, all
+`InvalidRequestError`: `EmbedFieldNameTooLong`, `EmbedFieldValueTooLong`,
+`EmbedAuthorNameTooLong`, `EmbedFooterTextTooLong`, `ImageURLTooLong` and `EmbedsTooLong`.
+
+`mentions` got stricter too, and this is also a server-side change that applies regardless of
+SDK version: a `@handle` token that appears only inside a code block or inline code no longer
+satisfies the mention, and the server answers `mention_token_missing` the same way it always
+has for a missing token — write the handle into `text` yourself, in plain text, outside any
+fence or backtick.
+
+Two fixes land alongside the caps: `ctx.edit(sent, { forUser: null })` with no other part
+named is now a real edit that reaches the wire as `{ "for_user": null }`, rather than being
+refused locally before the round trip — naming only the lock is a real change to the card.
+And a successful button-cooldown ack now logs one `info` line naming the message, the button,
+the presser and the window, so a cooldown firing and a press silently vanishing no longer look
+identical from the outside.
 
 ## Shadowed commands
 

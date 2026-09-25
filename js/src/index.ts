@@ -136,4 +136,4 @@ export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 export { Cooldown } from './cooldown.js';
 
 /** The package version. Pinned to `package.json` by test/index.test.ts. */
-export const version = '0.8.0';
+export const version = '0.9.0';

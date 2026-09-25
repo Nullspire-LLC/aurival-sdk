@@ -286,6 +286,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.8.0');
+    expect(aurival.version).toBe('0.9.0');
   });
 });
