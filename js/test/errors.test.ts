@@ -28,8 +28,13 @@ import {
   CooldownWithBody,
   DOC_URL_PREFIX,
   DuplicateButtonID,
+  EmbedAuthorNameTooLong,
   EmbedDescriptionTooLong,
   EmbedEmpty,
+  EmbedFieldNameTooLong,
+  EmbedFieldValueTooLong,
+  EmbedFooterTextTooLong,
+  EmbedsTooLong,
   EmbedTitleTooLong,
   EmbedURLNotHTTPS,
   EmptyText,
@@ -39,6 +44,7 @@ import {
   IdempotencyKeyInvalid,
   IdempotencyKeyReused,
   IdleTimeout,
+  ImageURLTooLong,
   InternalError,
   InvalidButtonStyle,
   InvalidCommandName,
@@ -122,6 +128,11 @@ import {
 // AMENDMENT-09 §8.1 then adds `too_many_aliases` and `for_user_not_member`
 // (both invalid_request_error, 400), taking it to 66. Both SHIP AHEAD of
 // the Go catalogue rows too, same authority as `nothing_to_edit` above.
+// The new server caps amendment then adds six more embed field/author/
+// footer/image-url length codes (all invalid_request_error, 400):
+// `embed_field_name_too_long`, `embed_field_value_too_long`,
+// `embed_author_name_too_long`, `embed_footer_text_too_long`,
+// `image_url_too_long`, `embeds_too_long` — taking it to 72.
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -189,6 +200,12 @@ const EXPECTED_CODES = [
   'cooldown_retry_after_invalid',
   'too_many_aliases',
   'for_user_not_member',
+  'embed_field_name_too_long',
+  'embed_field_value_too_long',
+  'embed_author_name_too_long',
+  'embed_footer_text_too_long',
+  'image_url_too_long',
+  'embeds_too_long',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -259,6 +276,12 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   cooldown_retry_after_invalid: [CooldownRetryAfterInvalid, 'invalid_request_error'],
   too_many_aliases: [TooManyAliases, 'invalid_request_error'],
   for_user_not_member: [ForUserNotMember, 'invalid_request_error'],
+  embed_field_name_too_long: [EmbedFieldNameTooLong, 'invalid_request_error'],
+  embed_field_value_too_long: [EmbedFieldValueTooLong, 'invalid_request_error'],
+  embed_author_name_too_long: [EmbedAuthorNameTooLong, 'invalid_request_error'],
+  embed_footer_text_too_long: [EmbedFooterTextTooLong, 'invalid_request_error'],
+  image_url_too_long: [ImageURLTooLong, 'invalid_request_error'],
+  embeds_too_long: [EmbedsTooLong, 'invalid_request_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {

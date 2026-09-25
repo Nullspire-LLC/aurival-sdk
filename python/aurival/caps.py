@@ -99,3 +99,31 @@ CAP_COOLDOWN_RETRY_AFTER_INVALID = (
 MAX_ALIASES_PER_COMMAND = 3
 CAP_TOO_MANY_ALIASES = f"a command declares at most {MAX_ALIASES_PER_COMMAND} aliases"
 CAP_FOR_USER_NOT_MEMBER = "for_user must name a member of this chat"
+
+# The server's new per-field/per-embed caps. `MAX_IMAGE_URL_RUNES` covers only
+# `image.url` and `thumbnail.url` — an author icon and a footer icon stay
+# uncapped, matching `_require_https`'s existing image-url handling in
+# embeds.py. `MAX_EMBED_TOTAL_LENGTH` is a whole-MESSAGE cap, summed across
+# every embed's title, description, every field name and value, author name
+# and footer text — not the message `text` itself. Every sentence below is
+# RENDERED, same convention as `CAP_TOO_MANY_ALIASES` above, and must stay
+# byte-identical to `sdk/js/src/caps.ts`'s rendered constants.
+MAX_FIELD_NAME_LENGTH = 256
+MAX_FIELD_VALUE_LENGTH = 1024
+MAX_AUTHOR_NAME_LENGTH = 256
+MAX_FOOTER_TEXT_LENGTH = 2048
+MAX_IMAGE_URL_RUNES = 2048
+MAX_EMBED_TOTAL_LENGTH = 6000
+
+CAP_FIELD_NAME_TOO_LONG = f"an embed field name is at most {MAX_FIELD_NAME_LENGTH} characters"
+CAP_FIELD_VALUE_TOO_LONG = f"an embed field value is at most {MAX_FIELD_VALUE_LENGTH} characters"
+CAP_AUTHOR_NAME_TOO_LONG = f"an embed author name is at most {MAX_AUTHOR_NAME_LENGTH} characters"
+CAP_FOOTER_TEXT_TOO_LONG = (
+    f"an embed footer's text is at most {MAX_FOOTER_TEXT_LENGTH} characters"
+)
+CAP_IMAGE_URL_TOO_LONG = f"an image url is at most {MAX_IMAGE_URL_RUNES} characters"
+CAP_EMBEDS_TOO_LONG = (
+    f"the embeds on a message carry at most {MAX_EMBED_TOTAL_LENGTH} characters in "
+    "total, across every title, description, field name and value, author name "
+    "and footer text"
+)

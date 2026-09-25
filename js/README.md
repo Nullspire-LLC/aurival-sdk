@@ -250,6 +250,11 @@ bot.on('member.joined', async (ctx) => {
 });
 ```
 
+Every entry in `mentions` needs its `@handle` token actually present in `text`, outside any
+code block or inline code, or the server rejects the request — write the handle into the
+message yourself, in plain text; the SDK will not edit `text` for you, and a mention inside
+code, or with no token at all, renders as nothing.
+
 ## Embeds and buttons
 
 `Embed` is a builder — every `setAuthor`/`setThumbnail`/`addField`/`setFooter` call returns the

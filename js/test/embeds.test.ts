@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  CAP_AUTHOR_NAME_TOO_LONG,
   CAP_AUTHOR_URL_WITHOUT_NAME,
   CAP_BAD_BUTTON_STYLE,
   CAP_BUTTON_ID_TOO_LONG,
@@ -12,7 +13,12 @@ import {
   CAP_DUPLICATE_BUTTON_ID,
   CAP_EMBED_FOOTER_TEXT_REQUIRED,
   CAP_EMBED_URL_WITHOUT_TITLE,
+  CAP_EMBEDS_TOO_LONG,
+  CAP_FIELD_NAME_TOO_LONG,
+  CAP_FIELD_VALUE_TOO_LONG,
+  CAP_FOOTER_TEXT_TOO_LONG,
   CAP_IMAGE_URL_NOT_HTTPS,
+  CAP_IMAGE_URL_TOO_LONG,
   CAP_INVALID_BUTTON_EMOJI,
   CAP_LABEL_TOO_LONG,
   CAP_LINK_BUTTON_MISSING_URL,
@@ -24,7 +30,13 @@ import {
   CAP_TOO_MANY_FIELDS,
   CAP_URL_ON_NON_LINK_BUTTON,
   EMPTY_MESSAGE,
+  MAX_AUTHOR_NAME_LENGTH,
   MAX_BUTTON_EMOJI_RUNES,
+  MAX_EMBED_TOTAL_LENGTH,
+  MAX_FIELD_NAME_LENGTH,
+  MAX_FIELD_VALUE_LENGTH,
+  MAX_FOOTER_TEXT_LENGTH,
+  MAX_IMAGE_URL_RUNES,
   MAX_LINK_URL_RUNES,
 } from '../src/caps.js';
 import { Button, Embed, serialiseButtons, serialiseEmbeds } from '../src/embeds.js';
@@ -978,4 +990,82 @@ describe('AMENDMENT-06 §5 sentence parity', () => {
       expect(sources).not.toContain('link buttons are not supported in v1');
     },
   );
+});
+
+describe('new server caps: field/author/footer/image-url length, whole-message total', () => {
+  it('CAP_FIELD_NAME_TOO_LONG / CAP_FIELD_VALUE_TOO_LONG: exact limit accepted, limit+1 refused', () => {
+    expect(() =>
+      new Embed().addField('n'.repeat(MAX_FIELD_NAME_LENGTH), 'v'.repeat(MAX_FIELD_VALUE_LENGTH)),
+    ).not.toThrow();
+    expect(() => new Embed().addField('n'.repeat(MAX_FIELD_NAME_LENGTH + 1), 'v')).toThrowError(
+      CAP_FIELD_NAME_TOO_LONG,
+    );
+    expect(() => new Embed().addField('n', 'v'.repeat(MAX_FIELD_VALUE_LENGTH + 1))).toThrowError(
+      CAP_FIELD_VALUE_TOO_LONG,
+    );
+    expect(() =>
+      serialiseEmbeds([
+        { fields: [{ name: 'n'.repeat(MAX_FIELD_NAME_LENGTH + 1), value: 'v', inline: false }] },
+      ]),
+    ).toThrowError(CAP_FIELD_NAME_TOO_LONG);
+    expect(() =>
+      serialiseEmbeds([
+        { fields: [{ name: 'n', value: 'v'.repeat(MAX_FIELD_VALUE_LENGTH + 1), inline: false }] },
+      ]),
+    ).toThrowError(CAP_FIELD_VALUE_TOO_LONG);
+  });
+
+  it('CAP_AUTHOR_NAME_TOO_LONG: exact limit accepted, limit+1 refused', () => {
+    expect(() => new Embed().setAuthor('a'.repeat(MAX_AUTHOR_NAME_LENGTH))).not.toThrow();
+    expect(() => new Embed().setAuthor('a'.repeat(MAX_AUTHOR_NAME_LENGTH + 1))).toThrowError(
+      CAP_AUTHOR_NAME_TOO_LONG,
+    );
+    expect(() =>
+      serialiseEmbeds([{ author: { name: 'a'.repeat(MAX_AUTHOR_NAME_LENGTH + 1) } }]),
+    ).toThrowError(CAP_AUTHOR_NAME_TOO_LONG);
+  });
+
+  it('CAP_FOOTER_TEXT_TOO_LONG: exact limit accepted, limit+1 refused', () => {
+    expect(() => new Embed().setFooter('f'.repeat(MAX_FOOTER_TEXT_LENGTH))).not.toThrow();
+    expect(() => new Embed().setFooter('f'.repeat(MAX_FOOTER_TEXT_LENGTH + 1))).toThrowError(
+      CAP_FOOTER_TEXT_TOO_LONG,
+    );
+    expect(() =>
+      serialiseEmbeds([{ footer: { text: 'f'.repeat(MAX_FOOTER_TEXT_LENGTH + 1) } }]),
+    ).toThrowError(CAP_FOOTER_TEXT_TOO_LONG);
+  });
+
+  it('CAP_IMAGE_URL_TOO_LONG: exact limit accepted, limit+1 refused, image/thumbnail only', () => {
+    const prefix = 'https://x.example/';
+    const okUrl = prefix + 'a'.repeat(MAX_IMAGE_URL_RUNES - prefix.length);
+    expect(okUrl.length).toBe(MAX_IMAGE_URL_RUNES);
+    expect(() => new Embed().setImage(okUrl)).not.toThrow();
+    expect(() => new Embed().setThumbnail(okUrl)).not.toThrow();
+    const tooLong = okUrl + 'a';
+    expect(() => new Embed().setImage(tooLong)).toThrowError(CAP_IMAGE_URL_TOO_LONG);
+    expect(() => new Embed().setThumbnail(tooLong)).toThrowError(CAP_IMAGE_URL_TOO_LONG);
+
+    // author icon and footer icon stay UNCAPPED.
+    const longIcon = prefix + 'a'.repeat(5000);
+    expect(() => new Embed().setAuthor('Quizbot', longIcon)).not.toThrow();
+    expect(() => new Embed().setFooter('footer text', longIcon)).not.toThrow();
+  });
+
+  it('CAP_EMBEDS_TOO_LONG: each field under its own cap, but the sum over 6000 is refused', () => {
+    const nearMaxEmbed = () =>
+      new Embed({ title: 't'.repeat(256), description: 'd'.repeat(1024) })
+        .setAuthor('a'.repeat(256))
+        .setFooter('f'.repeat(2048));
+
+    // 256 + 1024 + 256 + 2048 = 3584 per embed; two of them sum to 7168, over
+    // MAX_EMBED_TOTAL_LENGTH (6000), even though every individual field is
+    // under its own per-field cap.
+    expect(() => serialiseEmbeds([nearMaxEmbed(), nearMaxEmbed()])).toThrowError(
+      CAP_EMBEDS_TOO_LONG,
+    );
+
+    // One such embed alone is under the total (3584 < 6000) and passes.
+    expect(() => serialiseEmbeds([nearMaxEmbed()])).not.toThrow();
+    expect(MAX_EMBED_TOTAL_LENGTH).toBe(6000);
+  });
 });

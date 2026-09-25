@@ -260,8 +260,11 @@ class MentionNotMember(InvalidRequestError):
 
 
 class MentionTokenMissing(InvalidRequestError):
-    """`mention_token_missing` — a `mentions` entry's `@handle` token was not
-    found in `text`."""
+    """`mention_token_missing` — a `mentions` entry's `@handle` token does not
+    appear in `text` outside code blocks and inline code. A mention inside
+    code, or with no token at all, renders as nothing — the SDK never edits
+    `text` for you, so write the handle into the message yourself, in plain
+    text outside any ``` code block ``` or `inline code`."""
 
 
 class MessageNotYours(PermissionDeniedError):
@@ -389,6 +392,39 @@ class ButtonAlreadyUsed(InvalidRequestError):
     has been pressed; send a new message for another press."""
 
 
+class EmbedFieldNameTooLong(InvalidRequestError):
+    """`embed_field_name_too_long` — an embed field name is longer than
+    `MAX_FIELD_NAME_LENGTH`."""
+
+
+class EmbedFieldValueTooLong(InvalidRequestError):
+    """`embed_field_value_too_long` — an embed field value is longer than
+    `MAX_FIELD_VALUE_LENGTH`."""
+
+
+class EmbedAuthorNameTooLong(InvalidRequestError):
+    """`embed_author_name_too_long` — an embed author name is longer than
+    `MAX_AUTHOR_NAME_LENGTH`."""
+
+
+class EmbedFooterTextTooLong(InvalidRequestError):
+    """`embed_footer_text_too_long` — an embed footer's text is longer than
+    `MAX_FOOTER_TEXT_LENGTH`."""
+
+
+class ImageURLTooLong(InvalidRequestError):
+    """`image_url_too_long` — an `image.url` or `thumbnail.url` is longer
+    than `MAX_IMAGE_URL_RUNES`. Not `author.icon`/`footer.icon`: those stay
+    uncapped."""
+
+
+class EmbedsTooLong(InvalidRequestError):
+    """`embeds_too_long` — the embeds on one message carry more than
+    `MAX_EMBED_TOTAL_LENGTH` characters in total, summed across every title,
+    description, field name and value, author name and footer text. Not the
+    message `text` itself."""
+
+
 DOC_URL_PREFIX = "https://bots.aurival.com/docs/errors#"
 
 TYPE_CLASSES: dict[str, type[AurivalAPIError]] = {
@@ -462,6 +498,12 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     "embed_empty": EmbedEmpty,
     "buttons_without_message": ButtonsWithoutMessage,
     "button_already_used": ButtonAlreadyUsed,
+    "embed_field_name_too_long": EmbedFieldNameTooLong,
+    "embed_field_value_too_long": EmbedFieldValueTooLong,
+    "embed_author_name_too_long": EmbedAuthorNameTooLong,
+    "embed_footer_text_too_long": EmbedFooterTextTooLong,
+    "image_url_too_long": ImageURLTooLong,
+    "embeds_too_long": EmbedsTooLong,
     # AMENDMENT-07 §7: no wire sender at HEAD. See NothingToEdit.
     "nothing_to_edit": NothingToEdit,
     # AMENDMENT-08 §8: no wire sender at HEAD. See CooldownWithBody.

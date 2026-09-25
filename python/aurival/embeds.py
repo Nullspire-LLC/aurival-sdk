@@ -17,6 +17,7 @@ from typing import Union
 
 from .caps import (
     BUTTON_STYLES,
+    CAP_AUTHOR_NAME_TOO_LONG,
     CAP_AUTHOR_URL_WITHOUT_NAME,
     CAP_BAD_BUTTON_STYLE,
     CAP_BUTTON_ID_TOO_LONG,
@@ -25,7 +26,12 @@ from .caps import (
     CAP_DUPLICATE_BUTTON_ID,
     CAP_EMBED_FOOTER_TEXT_REQUIRED,
     CAP_EMBED_URL_WITHOUT_TITLE,
+    CAP_EMBEDS_TOO_LONG,
+    CAP_FIELD_NAME_TOO_LONG,
+    CAP_FIELD_VALUE_TOO_LONG,
+    CAP_FOOTER_TEXT_TOO_LONG,
     CAP_IMAGE_URL_NOT_HTTPS,
+    CAP_IMAGE_URL_TOO_LONG,
     CAP_INVALID_BUTTON_EMOJI,
     CAP_LABEL_TOO_LONG,
     CAP_LINK_BUTTON_MISSING_URL,
@@ -36,12 +42,18 @@ from .caps import (
     CAP_TOO_MANY_EMBEDS,
     CAP_TOO_MANY_FIELDS,
     CAP_URL_ON_NON_LINK_BUTTON,
+    MAX_AUTHOR_NAME_LENGTH,
     MAX_BUTTON_EMOJI_RUNES,
     MAX_BUTTON_ID_LENGTH,
     MAX_BUTTONS,
     MAX_DESCRIPTION_LENGTH,
     MAX_EMBED_FIELDS,
+    MAX_EMBED_TOTAL_LENGTH,
     MAX_EMBEDS,
+    MAX_FIELD_NAME_LENGTH,
+    MAX_FIELD_VALUE_LENGTH,
+    MAX_FOOTER_TEXT_LENGTH,
+    MAX_IMAGE_URL_RUNES,
     MAX_LABEL_RUNES,
     MAX_LINK_URL_RUNES,
     MAX_TITLE_LENGTH,
@@ -91,6 +103,15 @@ def _require_link_url(url: str) -> None:
     _require_https(url, CAP_LINK_URL_NOT_HTTPS)
     if len(url) > MAX_LINK_URL_RUNES:
         raise ValueError(CAP_LINK_URL_TOO_LONG)
+
+
+def _require_image_url(url: str) -> None:
+    """`image.url`/`thumbnail.url` only — https, then the new
+    `MAX_IMAGE_URL_RUNES` bound. `author.icon` and `footer.icon` stay
+    uncapped and keep calling `_require_https` directly."""
+    _require_https(url)
+    if len(url) > MAX_IMAGE_URL_RUNES:
+        raise ValueError(CAP_IMAGE_URL_TOO_LONG)
 
 
 _ZWJ = "\u200d"
@@ -263,10 +284,16 @@ class Embed:
     def add_field(self, name: str, value: str, inline: bool = False) -> Embed:
         if len(self.fields) >= MAX_EMBED_FIELDS:
             raise ValueError(CAP_TOO_MANY_FIELDS)
+        if len(name) > MAX_FIELD_NAME_LENGTH:
+            raise ValueError(CAP_FIELD_NAME_TOO_LONG)
+        if len(value) > MAX_FIELD_VALUE_LENGTH:
+            raise ValueError(CAP_FIELD_VALUE_TOO_LONG)
         self.fields.append({"name": name, "value": value, "inline": inline})
         return self
 
     def set_author(self, name: str, icon: str | None = None, url: str | None = None) -> Embed:
+        if len(name) > MAX_AUTHOR_NAME_LENGTH:
+            raise ValueError(CAP_AUTHOR_NAME_TOO_LONG)
         if icon is not None:
             _require_https(icon)
         if url:
@@ -282,12 +309,12 @@ class Embed:
         return self
 
     def set_thumbnail(self, url: str) -> Embed:
-        _require_https(url)
+        _require_image_url(url)
         self.thumbnail = {"url": url}
         return self
 
     def set_image(self, url: str) -> Embed:
-        _require_https(url)
+        _require_image_url(url)
         self.image = {"url": url}
         return self
 
@@ -296,6 +323,8 @@ class Embed:
         length cap, exactly like `thumbnail`, `image` and `author.icon`
         (AMENDMENT-06 §2). An icon with no text would render a floating glyph
         on a line with nothing to say, so it is refused."""
+        if len(text) > MAX_FOOTER_TEXT_LENGTH:
+            raise ValueError(CAP_FOOTER_TEXT_TOO_LONG)
         if icon is not None:
             _require_https(icon)
             if not text:
@@ -524,13 +553,17 @@ def serialise_embeds(embeds: list[EmbedLike] | None) -> list[dict[str, object]]:
     `MAX_EMBED_FIELDS` (6) is a per-message cap, summed across every embed's
     fields (AMENDMENT-05 §2) — a single embed's `.add_field` already refuses
     its own 7th field, but two embeds of 4 and 3 fields must also be refused
-    here, at the combined total."""
+    here, at the combined total. `MAX_EMBED_TOTAL_LENGTH` (6000) is the same
+    kind of whole-message cap, summed across every embed's title,
+    description, field name and value, author name and footer text — not the
+    message `text` itself."""
     if not embeds:
         return []
     if len(embeds) > MAX_EMBEDS:
         raise ValueError(CAP_TOO_MANY_EMBEDS)
     result: list[dict[str, object]] = []
     total_fields = 0
+    total_length = 0
     for e in embeds:
         if isinstance(e, Embed):
             d = e.to_dict()
@@ -542,6 +575,27 @@ def serialise_embeds(embeds: list[EmbedLike] | None) -> list[dict[str, object]]:
         total_fields += len(fields) if isinstance(fields, list) else 0
         if total_fields > MAX_EMBED_FIELDS:
             raise ValueError(CAP_TOO_MANY_FIELDS)
+        title = d.get("title")
+        total_length += len(title) if isinstance(title, str) else 0
+        description = d.get("description")
+        total_length += len(description) if isinstance(description, str) else 0
+        if isinstance(fields, list):
+            for f in fields:
+                if isinstance(f, dict):
+                    name = f.get("name")
+                    total_length += len(name) if isinstance(name, str) else 0
+                    value = f.get("value")
+                    total_length += len(value) if isinstance(value, str) else 0
+        author = d.get("author")
+        if isinstance(author, dict):
+            author_name = author.get("name")
+            total_length += len(author_name) if isinstance(author_name, str) else 0
+        footer = d.get("footer")
+        if isinstance(footer, dict):
+            footer_text = footer.get("text")
+            total_length += len(footer_text) if isinstance(footer_text, str) else 0
+        if total_length > MAX_EMBED_TOTAL_LENGTH:
+            raise ValueError(CAP_EMBEDS_TOO_LONG)
         result.append(d)
     return result
 

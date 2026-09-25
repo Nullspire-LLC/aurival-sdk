@@ -160,7 +160,13 @@ export class ReactionEmojiTooLong extends InvalidRequestError {}
  */
 export class MentionNotMember extends InvalidRequestError {}
 
-/** `mention_token_missing` — a `mentions` entry's `@handle` never appeared in `text`. */
+/**
+ * `mention_token_missing` — a `mentions` entry's `@handle` token does not
+ * appear in `text` outside code blocks and inline code. A mention inside
+ * code, or with no token at all, renders as nothing — the SDK never edits
+ * `text` for you, so write the handle into the message yourself, in plain
+ * text outside any ``` code block ``` or `inline code`.
+ */
 export class MentionTokenMissing extends InvalidRequestError {}
 
 export class BotSuspended extends PermissionDeniedError {}
@@ -267,6 +273,33 @@ export class ButtonsWithoutMessage extends InvalidRequestError {}
  */
 export class ButtonAlreadyUsed extends InvalidRequestError {}
 
+/** `embed_field_name_too_long` — an embed field name is longer than `MAX_FIELD_NAME_LENGTH`. */
+export class EmbedFieldNameTooLong extends InvalidRequestError {}
+
+/** `embed_field_value_too_long` — an embed field value is longer than `MAX_FIELD_VALUE_LENGTH`. */
+export class EmbedFieldValueTooLong extends InvalidRequestError {}
+
+/** `embed_author_name_too_long` — an embed author name is longer than `MAX_AUTHOR_NAME_LENGTH`. */
+export class EmbedAuthorNameTooLong extends InvalidRequestError {}
+
+/** `embed_footer_text_too_long` — an embed footer's text is longer than `MAX_FOOTER_TEXT_LENGTH`. */
+export class EmbedFooterTextTooLong extends InvalidRequestError {}
+
+/**
+ * `image_url_too_long` — an `image.url` or `thumbnail.url` is longer than
+ * `MAX_IMAGE_URL_RUNES`. Not `author.icon`/`footer.icon`: those stay
+ * uncapped.
+ */
+export class ImageURLTooLong extends InvalidRequestError {}
+
+/**
+ * `embeds_too_long` — the embeds on one message carry more than
+ * `MAX_EMBED_TOTAL_LENGTH` characters in total, summed across every title,
+ * description, field name and value, author name and footer text. Not the
+ * message `text` itself.
+ */
+export class EmbedsTooLong extends InvalidRequestError {}
+
 export class RateLimited extends RateLimitError {}
 export class PairRateLimited extends RateLimitError {}
 export class SyncRateLimited extends RateLimitError {}
@@ -354,6 +387,12 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   embed_empty: EmbedEmpty,
   buttons_without_message: ButtonsWithoutMessage,
   button_already_used: ButtonAlreadyUsed,
+  embed_field_name_too_long: EmbedFieldNameTooLong,
+  embed_field_value_too_long: EmbedFieldValueTooLong,
+  embed_author_name_too_long: EmbedAuthorNameTooLong,
+  embed_footer_text_too_long: EmbedFooterTextTooLong,
+  image_url_too_long: ImageURLTooLong,
+  embeds_too_long: EmbedsTooLong,
 };
 
 export interface FromEnvelopeOptions {

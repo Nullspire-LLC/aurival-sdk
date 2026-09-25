@@ -89,8 +89,9 @@ class Mention:
 
 def mention(user: User) -> Mention:
     """`@` + the user's handle, ready to drop into an f-string, plus the entry
-    `send(mentions=[...])` needs. The token has to appear in `text` or the
-    server refuses the send."""
+    `send(mentions=[...])` needs. The token has to appear in `text`, outside
+    any code block or inline code, or the server refuses the send — a token
+    inside code, or missing entirely, renders as nothing."""
     return Mention(token=f"@{user.handle}", entry={"user": user.id})
 
 

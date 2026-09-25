@@ -20,6 +20,7 @@
 
 import {
   BUTTON_STYLES,
+  CAP_AUTHOR_NAME_TOO_LONG,
   CAP_AUTHOR_URL_WITHOUT_NAME,
   CAP_BAD_BUTTON_STYLE,
   CAP_BUTTON_ID_TOO_LONG,
@@ -28,7 +29,12 @@ import {
   CAP_DUPLICATE_BUTTON_ID,
   CAP_EMBED_FOOTER_TEXT_REQUIRED,
   CAP_EMBED_URL_WITHOUT_TITLE,
+  CAP_EMBEDS_TOO_LONG,
+  CAP_FIELD_NAME_TOO_LONG,
+  CAP_FIELD_VALUE_TOO_LONG,
+  CAP_FOOTER_TEXT_TOO_LONG,
   CAP_IMAGE_URL_NOT_HTTPS,
+  CAP_IMAGE_URL_TOO_LONG,
   CAP_INVALID_BUTTON_EMOJI,
   CAP_LABEL_TOO_LONG,
   CAP_LINK_BUTTON_MISSING_URL,
@@ -39,12 +45,18 @@ import {
   CAP_TOO_MANY_EMBEDS,
   CAP_TOO_MANY_FIELDS,
   CAP_URL_ON_NON_LINK_BUTTON,
+  MAX_AUTHOR_NAME_LENGTH,
   MAX_BUTTON_EMOJI_RUNES,
   MAX_BUTTON_ID_LENGTH,
   MAX_BUTTONS,
   MAX_DESCRIPTION_LENGTH,
   MAX_EMBED_FIELDS,
+  MAX_EMBED_TOTAL_LENGTH,
   MAX_EMBEDS,
+  MAX_FIELD_NAME_LENGTH,
+  MAX_FIELD_VALUE_LENGTH,
+  MAX_FOOTER_TEXT_LENGTH,
+  MAX_IMAGE_URL_RUNES,
   MAX_LABEL_RUNES,
   MAX_LINK_URL_RUNES,
   MAX_TITLE_LENGTH,
@@ -80,6 +92,16 @@ function requireHttps(url: string, sentence: string = CAP_IMAGE_URL_NOT_HTTPS): 
 function requireLinkUrl(url: string): void {
   requireHttps(url, CAP_LINK_URL_NOT_HTTPS);
   if (graphemeLength(url) > MAX_LINK_URL_RUNES) throw new Error(CAP_LINK_URL_TOO_LONG);
+}
+
+/**
+ * `image.url`/`thumbnail.url` only — https, then the new `MAX_IMAGE_URL_RUNES`
+ * bound. `author.icon` and `footer.icon` stay uncapped and keep calling
+ * `requireHttps` directly.
+ */
+function requireImageUrl(url: string): void {
+  requireHttps(url);
+  if (graphemeLength(url) > MAX_IMAGE_URL_RUNES) throw new Error(CAP_IMAGE_URL_TOO_LONG);
 }
 
 const RUNE_ZWJ = 0x200d;
@@ -276,11 +298,14 @@ export class Embed {
   /** Refuses the 7th field on ONE embed — the whole-message cap (summed across embeds) is enforced by `serialiseEmbeds`. */
   addField(name: string, value: string, inline = false): this {
     if (this.fields.length >= MAX_EMBED_FIELDS) throw new Error(CAP_TOO_MANY_FIELDS);
+    if (name.length > MAX_FIELD_NAME_LENGTH) throw new Error(CAP_FIELD_NAME_TOO_LONG);
+    if (value.length > MAX_FIELD_VALUE_LENGTH) throw new Error(CAP_FIELD_VALUE_TOO_LONG);
     this.fields.push({ name, value, inline });
     return this;
   }
 
   setAuthor(name: string, icon?: string, url?: string): this {
+    if (name.length > MAX_AUTHOR_NAME_LENGTH) throw new Error(CAP_AUTHOR_NAME_TOO_LONG);
     if (icon !== undefined) requireHttps(icon);
     if (url !== undefined) {
       if (name === '') throw new Error(CAP_AUTHOR_URL_WITHOUT_NAME);
@@ -294,19 +319,20 @@ export class Embed {
   }
 
   setThumbnail(url: string): this {
-    requireHttps(url);
+    requireImageUrl(url);
     this.thumbnail = { url };
     return this;
   }
 
   setImage(url: string): this {
-    requireHttps(url);
+    requireImageUrl(url);
     this.image = { url };
     return this;
   }
 
   setFooter(text: string, icon?: string): this {
     if (text === '') throw new Error(CAP_EMBED_FOOTER_TEXT_REQUIRED);
+    if (text.length > MAX_FOOTER_TEXT_LENGTH) throw new Error(CAP_FOOTER_TEXT_TOO_LONG);
     if (icon !== undefined) requireHttps(icon);
     const footer: EmbedFooterValue = { text };
     if (icon !== undefined) footer.icon = icon;
@@ -426,6 +452,9 @@ function validateEmbedShape(embed: Embed): void {
   if (embed.description !== undefined && embed.description.length > MAX_DESCRIPTION_LENGTH) {
     throw new Error(CAP_DESCRIPTION_TOO_LONG);
   }
+  if (embed.author !== undefined && embed.author.name.length > MAX_AUTHOR_NAME_LENGTH) {
+    throw new Error(CAP_AUTHOR_NAME_TOO_LONG);
+  }
   if (embed.author?.icon !== undefined) requireHttps(embed.author.icon);
   if (embed.url !== undefined) {
     if (embed.title === undefined || embed.title === '') {
@@ -439,15 +468,18 @@ function validateEmbedShape(embed: Embed): void {
   }
   if (embed.footer !== undefined) {
     if (embed.footer.text === '') throw new Error(CAP_EMBED_FOOTER_TEXT_REQUIRED);
+    if (embed.footer.text.length > MAX_FOOTER_TEXT_LENGTH) {
+      throw new Error(CAP_FOOTER_TEXT_TOO_LONG);
+    }
     if (embed.footer.icon !== undefined) requireHttps(embed.footer.icon);
   }
-  if (embed.thumbnail !== undefined && !embed.thumbnail.url.startsWith('https://')) {
-    throw new Error(CAP_IMAGE_URL_NOT_HTTPS);
-  }
-  if (embed.image !== undefined && !embed.image.url.startsWith('https://')) {
-    throw new Error(CAP_IMAGE_URL_NOT_HTTPS);
-  }
+  if (embed.thumbnail !== undefined) requireImageUrl(embed.thumbnail.url);
+  if (embed.image !== undefined) requireImageUrl(embed.image.url);
   if (embed.fields.length > MAX_EMBED_FIELDS) throw new Error(CAP_TOO_MANY_FIELDS);
+  for (const field of embed.fields) {
+    if (field.name.length > MAX_FIELD_NAME_LENGTH) throw new Error(CAP_FIELD_NAME_TOO_LONG);
+    if (field.value.length > MAX_FIELD_VALUE_LENGTH) throw new Error(CAP_FIELD_VALUE_TOO_LONG);
+  }
 }
 
 export interface ButtonInit {
@@ -641,6 +673,20 @@ export function serialiseEmbeds(
   for (const embed of normalised) validateEmbedShape(embed);
   const totalFields = normalised.reduce((sum, embed) => sum + embed.fields.length, 0);
   if (totalFields > MAX_EMBED_FIELDS) throw new Error(CAP_TOO_MANY_FIELDS);
+  // Whole-message cap, summed across every embed's title, description,
+  // field name and value, author name and footer text — not the message
+  // `text` itself.
+  let totalLength = 0;
+  for (const embed of normalised) {
+    totalLength += embed.title?.length ?? 0;
+    totalLength += embed.description?.length ?? 0;
+    for (const field of embed.fields) {
+      totalLength += field.name.length + field.value.length;
+    }
+    totalLength += embed.author?.name.length ?? 0;
+    totalLength += embed.footer?.text.length ?? 0;
+    if (totalLength > MAX_EMBED_TOTAL_LENGTH) throw new Error(CAP_EMBEDS_TOO_LONG);
+  }
   return normalised.map((embed) => embed.toJSON());
 }
 

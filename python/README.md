@@ -258,7 +258,10 @@ async def greet(ctx: MemberContext) -> None:
 
 `mentions` also takes a bare `User` or `{"user": "usr_…"}` directly — `mention()` exists for
 the token, not because the other forms are wrong. Every entry in `mentions` needs its
-`@handle` token actually present in `text`, or the server rejects the request.
+`@handle` token actually present in `text`, outside any code block or inline code, or the
+server rejects the request — write the handle into the message yourself, in plain text; the
+SDK will not edit `text` for you, and a mention inside code, or with no token at all, renders
+as nothing.
 
 ## Embeds and buttons
 

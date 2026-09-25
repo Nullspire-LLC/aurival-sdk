@@ -798,3 +798,91 @@ def test_the_truth_table_is_still_the_servers_truth_table() -> None:
         "The server is authoritative (AMENDMENT-06 §3): port the change, re-grade, and "
         "never land an SDK check stricter than the server's."
     )
+
+
+# --- new server caps: field/author/footer/image-url length, whole-message total ---
+
+
+def test_field_name_and_value_caps_are_refused_by_name() -> None:
+    from aurival.caps import (
+        CAP_FIELD_NAME_TOO_LONG,
+        CAP_FIELD_VALUE_TOO_LONG,
+        MAX_FIELD_NAME_LENGTH,
+        MAX_FIELD_VALUE_LENGTH,
+    )
+
+    # Exact limit accepted.
+    Embed().add_field("x" * MAX_FIELD_NAME_LENGTH, "x" * MAX_FIELD_VALUE_LENGTH)
+    with pytest.raises(ValueError, match=CAP_FIELD_NAME_TOO_LONG):
+        Embed().add_field("x" * (MAX_FIELD_NAME_LENGTH + 1), "ok")
+    with pytest.raises(ValueError, match=CAP_FIELD_VALUE_TOO_LONG):
+        Embed().add_field("ok", "x" * (MAX_FIELD_VALUE_LENGTH + 1))
+    with pytest.raises(ValueError, match=CAP_FIELD_NAME_TOO_LONG):
+        serialise_embeds(
+            [{"fields": [{"name": "x" * (MAX_FIELD_NAME_LENGTH + 1), "value": "v"}]}]
+        )
+    with pytest.raises(ValueError, match=CAP_FIELD_VALUE_TOO_LONG):
+        serialise_embeds(
+            [{"fields": [{"name": "n", "value": "x" * (MAX_FIELD_VALUE_LENGTH + 1)}]}]
+        )
+
+
+def test_author_name_cap_is_refused_by_name() -> None:
+    from aurival.caps import CAP_AUTHOR_NAME_TOO_LONG, MAX_AUTHOR_NAME_LENGTH
+
+    Embed().set_author("x" * MAX_AUTHOR_NAME_LENGTH)
+    with pytest.raises(ValueError, match=CAP_AUTHOR_NAME_TOO_LONG):
+        Embed().set_author("x" * (MAX_AUTHOR_NAME_LENGTH + 1))
+    with pytest.raises(ValueError, match=CAP_AUTHOR_NAME_TOO_LONG):
+        serialise_embeds([{"author": {"name": "x" * (MAX_AUTHOR_NAME_LENGTH + 1)}}])
+
+
+def test_footer_text_cap_is_refused_by_name() -> None:
+    from aurival.caps import CAP_FOOTER_TEXT_TOO_LONG, MAX_FOOTER_TEXT_LENGTH
+
+    Embed().set_footer("x" * MAX_FOOTER_TEXT_LENGTH)
+    with pytest.raises(ValueError, match=CAP_FOOTER_TEXT_TOO_LONG):
+        Embed().set_footer("x" * (MAX_FOOTER_TEXT_LENGTH + 1))
+    with pytest.raises(ValueError, match=CAP_FOOTER_TEXT_TOO_LONG):
+        serialise_embeds([{"footer": {"text": "x" * (MAX_FOOTER_TEXT_LENGTH + 1)}}])
+
+
+def test_image_url_length_cap_is_refused_by_name_image_and_thumbnail_only() -> None:
+    from aurival.caps import CAP_IMAGE_URL_TOO_LONG, MAX_IMAGE_URL_RUNES
+
+    ok_url = "https://x.example/" + "a" * (MAX_IMAGE_URL_RUNES - len("https://x.example/"))
+    assert len(ok_url) == MAX_IMAGE_URL_RUNES
+    Embed().set_image(ok_url)
+    Embed().set_thumbnail(ok_url)
+    too_long = ok_url + "a"
+    with pytest.raises(ValueError, match=CAP_IMAGE_URL_TOO_LONG):
+        Embed().set_image(too_long)
+    with pytest.raises(ValueError, match=CAP_IMAGE_URL_TOO_LONG):
+        Embed().set_thumbnail(too_long)
+    # author icon and footer icon stay UNCAPPED — a long https url is fine.
+    long_icon = "https://x.example/" + "a" * 5000
+    Embed().set_author("Quizbot", long_icon)
+    Embed().set_footer("footer text", long_icon)
+
+
+def test_embeds_total_length_cap_is_per_message_summed_across_embeds() -> None:
+    """Each field is individually under its own per-field cap (title 256,
+    description 1024, author name 256, footer text 2048 — 3584 per embed),
+    but two such embeds sum to 7168, over MAX_EMBED_TOTAL_LENGTH (6000), and
+    are refused at serialisation."""
+    from aurival.caps import CAP_EMBEDS_TOO_LONG, MAX_EMBED_TOTAL_LENGTH
+
+    def _near_max_embed() -> Embed:
+        return (
+            Embed(title="t" * MAX_TITLE_LENGTH, description="d" * MAX_DESCRIPTION_LENGTH)
+            .set_author("a" * 256)
+            .set_footer("f" * 2048)
+        )
+
+    first = _near_max_embed()
+    second = _near_max_embed()
+    with pytest.raises(ValueError, match=CAP_EMBEDS_TOO_LONG):
+        serialise_embeds([first, second])
+
+    # One such embed alone is under the total (3584 < 6000) and passes.
+    serialise_embeds([_near_max_embed()])

@@ -299,7 +299,12 @@ function forUserPart(forUser: User | string | null | undefined): string | null |
   return userRefId(forUser);
 }
 
-/** `send()` takes the same, plus who the `@handle` tokens in `text` point at. */
+/**
+ * `send()` takes the same, plus who the `@handle` tokens in `text` point at.
+ * Each entry's token has to appear in `text` itself, outside any code block
+ * or inline code — the SDK never edits `text` for you, and a token inside
+ * code, or missing entirely, renders as nothing.
+ */
 export interface SendOptions extends ReplyOptions {
   mentions?: MentionLike[];
 }
@@ -590,7 +595,9 @@ export class BaseContext {
   /**
    * Send a message to any chat this bot is in — this one or another.
    * `mentions` names who `@handle` tokens in `text` point at: pass
-   * `mention(user)`, a `User`, or `{ user: 'usr_…' }`. `embeds`/`buttons`
+   * `mention(user)`, a `User`, or `{ user: 'usr_…' }`. Each token has to
+   * appear in `text` outside any code block or inline code — the server
+   * refuses the send otherwise, and won't edit `text` for you. `embeds`/`buttons`
    * accept a builder or a plain object literal, validated the same either
    * way. Returns the stored message.
    */

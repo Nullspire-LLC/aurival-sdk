@@ -33,6 +33,11 @@
  * `Context.invokedAs`) and caller-locked buttons (`for_user` on
  * `send`/`reply`/`edit`/`ack`, `Message.forUser`) are otherwise additive
  * fields on existing shapes, not new exports — taking the count to 105.
+ *
+ * The new server caps amendment then adds six more error classes, mirrored
+ * in both SDKs: `EmbedFieldNameTooLong`, `EmbedFieldValueTooLong`,
+ * `EmbedAuthorNameTooLong`, `EmbedFooterTextTooLong`, `ImageURLTooLong` and
+ * `EmbedsTooLong` — taking the count to 111.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -109,8 +114,13 @@ const EXPECTED = [
   'DOC_URL_PREFIX',
   'DuplicateButtonID',
   'Embed',
+  'EmbedAuthorNameTooLong',
   'EmbedDescriptionTooLong',
   'EmbedEmpty',
+  'EmbedFieldNameTooLong',
+  'EmbedFieldValueTooLong',
+  'EmbedFooterTextTooLong',
+  'EmbedsTooLong',
   'EmbedTitleTooLong',
   'EmbedURLNotHTTPS',
   'EmptyText',
@@ -123,6 +133,7 @@ const EXPECTED = [
   'IdempotencyKeyInvalid',
   'IdempotencyKeyReused',
   'IdleTimeout',
+  'ImageURLTooLong',
   'InternalError',
   'InvalidButtonStyle',
   'InvalidCommandName',
@@ -195,8 +206,10 @@ describe('the public surface', () => {
   // names plus `MentionLike`, 103 total.
   // AMENDMENT-09 then adds `ForUserNotMember` and `TooManyAliases`, both
   // mirrored in both SDKs — 104 mirrored names plus `MentionLike`, 105 total.
-  it('is exactly the 104 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(105);
+  // The new server caps amendment then adds six more error classes, all
+  // mirrored in both SDKs — 110 mirrored names plus `MentionLike`, 111 total.
+  it('is exactly the 110 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(111);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
