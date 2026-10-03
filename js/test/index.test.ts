@@ -106,6 +106,7 @@ const EXPECTED = [
   'ByeAction',
   'CODE_CLASSES',
   'Chat',
+  'ChatReadOnly',
   'Command',
   'Context',
   'Cooldown',
@@ -208,8 +209,10 @@ describe('the public surface', () => {
   // mirrored in both SDKs — 104 mirrored names plus `MentionLike`, 105 total.
   // The new server caps amendment then adds six more error classes, all
   // mirrored in both SDKs — 110 mirrored names plus `MentionLike`, 111 total.
-  it('is exactly the 110 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(111);
+  // `ChatReadOnly` (`chat_read_only`, permission_error 403) then adds one more,
+  // mirrored in both SDKs — 111 mirrored names plus `MentionLike`, 112 total.
+  it('is exactly the 111 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(112);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),

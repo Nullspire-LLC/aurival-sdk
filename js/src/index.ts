@@ -43,6 +43,7 @@ export {
   ButtonMissingField,
   ButtonsWithoutMessage,
   CODE_CLASSES,
+  ChatReadOnly,
   CooldownRetryAfterInvalid,
   CooldownWithBody,
   DOC_URL_PREFIX,

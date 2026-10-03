@@ -175,6 +175,15 @@ export class BotPlaygroundOnly extends PermissionDeniedError {}
 /** `message_not_yours` — 403, `edit()`/`delete()` only work on the bot's own messages. */
 export class MessageNotYours extends PermissionDeniedError {}
 
+/**
+ * `chat_read_only` — 403, the chat's host turned on read-only, so only the host
+ * and co-hosts can send; a bot is a plain member and cannot send there until
+ * read-only is turned off. Server text: "This chat is read-only right now. Only
+ * its host and co-hosts can send messages, and a bot is a plain member. Sends
+ * work again when the host turns read-only off."
+ */
+export class ChatReadOnly extends PermissionDeniedError {}
+
 // AMENDMENT-05 §2. The card's caps and per-field refusals — every one a 400,
 // and every sentence quotes card.go's CapTemplate* constants (mirrored in
 // caps.ts) so a cap cannot move in the validator without moving here too.
@@ -372,6 +381,7 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   mention_not_member: MentionNotMember,
   mention_token_missing: MentionTokenMissing,
   message_not_yours: MessageNotYours,
+  chat_read_only: ChatReadOnly,
   too_many_embeds: TooManyEmbeds,
   too_many_embed_fields: TooManyEmbedFields,
   too_many_buttons: TooManyButtons,
