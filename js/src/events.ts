@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { EMPTY_MESSAGE as NOTHING_TO_SAY, NOTHING_TO_EDIT } from './caps.js';
+import { CAP_FORM_ACK_COOLDOWN, EMPTY_MESSAGE as NOTHING_TO_SAY, NOTHING_TO_EDIT } from './caps.js';
 import { AurivalError } from './errors.js';
 import {
   buttonUsedFromWire,
@@ -22,7 +22,9 @@ import {
   serialiseEmbeds,
 } from './embeds.js';
 import type { Button, ButtonLike, ButtonUsed, Embed, EmbedLike } from './embeds.js';
+import type { AnyFormValues } from './forms.js';
 import type { CardParts, HttpClient } from './http.js';
+import { extractRawFormValues } from './rawjson.js';
 import { normalizeCooldownOption } from './cooldown.js';
 import type { Cooldown, CooldownOption } from './cooldown.js';
 
@@ -107,6 +109,7 @@ export interface EventInit {
   created_at: string;
   sequence: number;
   data: Record<string, unknown>;
+  rawValues?: Readonly<Record<string, string>> | undefined;
 }
 
 export class Event {
@@ -115,6 +118,13 @@ export class Event {
   readonly created_at: string;
   readonly sequence: number;
   readonly data: Record<string, unknown>;
+  /**
+   * `form.submitted` only: the exact JSON text of each answer, read from the
+   * raw frame by `extractRawFormValues`. Absent on every other type, and on a
+   * frame whose text was not available; `FormContext` then re-serialises the
+   * parsed value.
+   */
+  readonly rawValues: Readonly<Record<string, string>> | undefined;
 
   constructor(init: EventInit) {
     this.id = init.id;
@@ -122,21 +132,31 @@ export class Event {
     this.created_at = init.created_at;
     this.sequence = init.sequence;
     this.data = init.data;
+    this.rawValues = init.rawValues;
   }
 
   /**
    * `frame` is one WireEvent (`{object, id, type, created_at, sequence, data}`)
    * — the `event` frame's payload, top-level, not re-wrapped.
+   *
+   * `frameText` is the whole raw frame (`{"op":"event","d":{...}}`). It is
+   * read only for a `form.submitted`, to keep each answer's exact text.
    */
-  static fromFrame(frame: Record<string, unknown>): Event {
+  static fromFrame(frame: Record<string, unknown>, frameText?: string): Event {
     const sequence = Number(frame['sequence']);
-    return new Event({
+    const type = asString(frame['type']);
+    const init: EventInit = {
       id: asString(frame['id']),
-      type: asString(frame['type']),
+      type,
       created_at: asString(frame['created_at']),
       sequence: Number.isFinite(sequence) ? Math.trunc(sequence) : 0,
       data: asRecord(frame['data']) ?? {},
-    });
+    };
+    if (type === 'form.submitted' && frameText !== undefined) {
+      const raw = extractRawFormValues(frameText);
+      if (raw !== null) init.rawValues = raw;
+    }
+    return new Event(init);
   }
 }
 
@@ -524,8 +544,15 @@ export type BotEventType = 'bot.added' | 'bot.removed';
 export type ReactionEventType = 'reaction.added';
 /** `button.pressed` — someone pressed a button on one of this bot's own messages (AMENDMENT-05). */
 export type ButtonEventType = 'button.pressed';
+/** `form.submitted` — someone submitted a form button on one of this bot's own messages (AMENDMENT-10). */
+export type FormEventType = 'form.submitted';
 /** Every event type `bot.on()` names. `command.invoked` goes through `bot.command()`. */
-export type EventType = MemberEventType | BotEventType | ReactionEventType | ButtonEventType;
+export type EventType =
+  | MemberEventType
+  | BotEventType
+  | ReactionEventType
+  | ButtonEventType
+  | FormEventType;
 
 interface BaseInit {
   chat: Chat;
@@ -1001,6 +1028,156 @@ export class ButtonContext extends BaseContext {
   }
 }
 
+/** What `FormContext.ack` takes: the card parts an ack may carry, and never a cooldown. */
+export type FormAckInit = EditInit & { cooldown?: never };
+
+export interface FormContextInit<V extends object> extends BaseInit {
+  user: User;
+  message: Message;
+  button: string;
+  interaction: string;
+  values: V;
+  rawValues: Readonly<Record<string, string>>;
+  submittedAt: string;
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return value === null || (typeof value !== 'object' && typeof value !== 'function');
+}
+
+/**
+ * Exact text per answer. The scanned text is used only when it decodes back
+ * to the very value `JSON.parse` produced, so a scanner surprise can never
+ * hand a bot text for the wrong answer; anything else is re-serialised.
+ */
+function rawValuesFor(
+  values: Record<string, unknown>,
+  scanned: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    let text = JSON.stringify(value) ?? 'null';
+    const candidate = scanned !== undefined && Object.hasOwn(scanned, key) ? scanned[key] : undefined;
+    if (candidate !== undefined && isPrimitive(value)) {
+      try {
+        if (Object.is(JSON.parse(candidate), value)) text = candidate;
+      } catch {
+        // keep the re-serialised text
+      }
+    }
+    Object.defineProperty(out, key, {
+      value: text,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+/**
+ * `form.submitted`: someone submitted a form on one of this bot's own cards
+ * (AMENDMENT-10). `values` has every declared field, typed by the form
+ * (`bot.onForm`) or a primitive per field id (`bot.on('form.submitted')`).
+ *
+ * `values` holds what `JSON.parse` made of the frame, so a decimal is a JS
+ * double: `2.10` is `2.1` and anything past about 15 significant digits loses
+ * precision. `rawValues` is the server's exact JSON text of each answer
+ * (`"12.50"`), on the context and not inside `values`, so a field may use any
+ * valid id.
+ */
+export class FormContext<V extends object = AnyFormValues> extends BaseContext {
+  readonly #http: HttpClient;
+  /** Who submitted. */
+  readonly user: User;
+  /** The bot's message the form button lives on — id only. `reply()` quotes it. */
+  readonly message: Message;
+  /** The form button's id, which is the form's id. */
+  readonly button: string;
+  /** The interaction id — `ack()` posts to `/v1/interactions/{interaction}/ack`. */
+  readonly interaction: string;
+  /** The answers, one per declared field; an unanswered optional field is `null`, a boolean is never `null`. */
+  readonly values: V;
+  /** The exact JSON text of each answer, for decimals. */
+  readonly rawValues: Readonly<Record<string, string>>;
+  /** When the person submitted, as the RFC 3339 text the server sent. */
+  readonly submittedAt: string;
+
+  constructor(init: FormContextInit<V>) {
+    super(init);
+    this.#http = init.http;
+    this.user = init.user;
+    this.message = init.message;
+    this.button = init.button;
+    this.interaction = init.interaction;
+    this.values = init.values;
+    this.rawValues = init.rawValues;
+    this.submittedAt = init.submittedAt;
+  }
+
+  protected override quotes(): string | null {
+    return this.message.id === '' ? null : this.message.id;
+  }
+
+  /**
+   * Acknowledge the submission — `POST /v1/interactions/{interaction}/ack`,
+   * like `ButtonContext.ack`: nothing, a text reply, or a card patch
+   * (`embeds`, `buttons`, `forUser`) as one atomic write.
+   *
+   * **A card patch is public to every member of the chat.** Never echo an
+   * answer into the card; send a DM for a private reply.
+   *
+   * There is no cooldown ack for a form: the server rate-limits submissions
+   * itself, so `cooldown` is not in the type and is refused here at runtime.
+   */
+  async ack(init?: FormAckInit): Promise<void> {
+    if (init !== undefined && Object.hasOwn(init, 'cooldown')) {
+      throw new Error(CAP_FORM_ACK_COOLDOWN);
+    }
+    if (init === undefined) {
+      await this.#http.ackInteraction(this.interaction);
+      return;
+    }
+    const resolvedButtons = buttonsPart(init.buttons);
+    await this.#http.ackInteraction(this.interaction, cardParts(init, resolvedButtons.json));
+    if (Array.isArray(resolvedButtons.json) && resolvedButtons.json.length > 0) {
+      recordCardCooldown(this.#http, this.message.id, undefined, resolvedButtons.cooldowns);
+    }
+  }
+
+  static fromEvent(event: Event, http: HttpClient): FormContext {
+    const data = event.data;
+    const chatRef = data['chat'];
+    const chat =
+      typeof chatRef === 'string'
+        ? chatFromWire({ id: chatRef })
+        : chatFromWire(asRecord(chatRef) ?? {});
+    const ref = data['message'];
+    const userRecord = asRecord(data['user']);
+    const values = asRecord(data['values']) ?? {};
+    return new FormContext({
+      chat,
+      // §4 names the submitter `{ id, username }`; the SDK's `User` is
+      // `{ id, handle, name }`, so `username` fills both when they are absent.
+      user: userRecord
+        ? {
+            id: asString(userRecord['id']),
+            handle: asString(userRecord['handle'], asString(userRecord['username'])),
+            name: asString(userRecord['name'], asString(userRecord['username'])),
+          }
+        : EMPTY_USER,
+      message: typeof ref === 'string' ? messageFromRef(ref) : EMPTY_MESSAGE,
+      button: asString(data['button']),
+      interaction: asString(data['interaction']),
+      values: values as AnyFormValues,
+      rawValues: rawValuesFor(values, event.rawValues),
+      submittedAt: asString(data['submitted_at']),
+      event,
+      http,
+    });
+  }
+}
+
 export interface EventContextInit extends BaseInit {
   sender: User | null;
   user: User | null;
@@ -1053,7 +1230,13 @@ export class EventContext extends BaseContext {
 
 /** Any context a handler can receive. What `bot.onError()` sees beside the error. */
 export type AnyContext =
-  Context | MemberContext | BotContext | ReactionContext | ButtonContext | EventContext;
+  | Context
+  | MemberContext
+  | BotContext
+  | ReactionContext
+  | ButtonContext
+  | FormContext
+  | EventContext;
 
 /**
  * The context class for an event, by its type. `command.invoked` gets
@@ -1075,6 +1258,8 @@ export function contextFor(event: Event, http: HttpClient): AnyContext {
       return ReactionContext.fromEvent(event, http);
     case 'button.pressed':
       return ButtonContext.fromEvent(event, http);
+    case 'form.submitted':
+      return FormContext.fromEvent(event, http);
     default:
       return EventContext.fromEvent(event, http);
   }

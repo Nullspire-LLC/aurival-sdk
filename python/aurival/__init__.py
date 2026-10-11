@@ -70,6 +70,7 @@ from .errors import (
     InvalidButtonEmoji,
     InvalidButtonStyle,
     InvalidCommandName,
+    InvalidComponent,
     InvalidJSON,
     InvalidRequestError,
     KeyAlreadyPaired,
@@ -118,6 +119,8 @@ from .events import (
     Event,
     EventContext,
     EventType,
+    FormContext,
+    FormEventType,
     MemberContext,
     MemberPage,
     Mention,
@@ -126,9 +129,10 @@ from .events import (
     User,
     mention,
 )
+from .forms import Field, Form, FormValueError, FormValues, define_form
 from .socket import BYE_ACTIONS, ByeAction, action_for_bye
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 # Everything a developer can name. The JS package mirrors this list file for file
 # (SDK-7), so a name missing here becomes a permanent asymmetry: adding an export
@@ -192,7 +196,13 @@ __all__ = [
     "Event",
     "EventContext",
     "EventType",
+    "Field",
     "ForUserNotMember",
+    "Form",
+    "FormContext",
+    "FormEventType",
+    "FormValueError",
+    "FormValues",
     "FrameInvalid",
     "FrameTooLarge",
     "IdempotencyKeyInvalid",
@@ -203,6 +213,7 @@ __all__ = [
     "InvalidButtonEmoji",
     "InvalidButtonStyle",
     "InvalidCommandName",
+    "InvalidComponent",
     "InvalidJSON",
     "InvalidRequestError",
     "KeyAlreadyPaired",
@@ -245,6 +256,7 @@ __all__ = [
     "User",
     "__version__",
     "action_for_bye",
+    "define_form",
     "from_envelope",
     "mention",
 ]

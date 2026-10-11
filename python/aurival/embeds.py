@@ -17,11 +17,13 @@ from typing import Union
 
 from .caps import (
     BUTTON_STYLES,
+    FORM_BUTTON_STYLE,
     CAP_AUTHOR_NAME_TOO_LONG,
     CAP_AUTHOR_URL_WITHOUT_NAME,
     CAP_BAD_BUTTON_STYLE,
     CAP_BUTTON_ID_TOO_LONG,
     CAP_BUTTON_MISSING_LABEL,
+    CAP_COOLDOWN_ON_FORM_BUTTON,
     CAP_DESCRIPTION_TOO_LONG,
     CAP_DUPLICATE_BUTTON_ID,
     CAP_EMBED_FOOTER_TEXT_REQUIRED,
@@ -40,6 +42,7 @@ from .caps import (
     CAP_TITLE_TOO_LONG,
     CAP_TOO_MANY_BUTTONS,
     CAP_TOO_MANY_EMBEDS,
+    CAP_TOO_MANY_FORM_BUTTONS,
     CAP_TOO_MANY_FIELDS,
     CAP_URL_ON_NON_LINK_BUTTON,
     MAX_AUTHOR_NAME_LENGTH,
@@ -53,6 +56,7 @@ from .caps import (
     MAX_FIELD_NAME_LENGTH,
     MAX_FIELD_VALUE_LENGTH,
     MAX_FOOTER_TEXT_LENGTH,
+    MAX_FORM_BUTTONS,
     MAX_IMAGE_URL_RUNES,
     MAX_LABEL_RUNES,
     MAX_LINK_URL_RUNES,
@@ -65,6 +69,7 @@ from .cooldown import (
     CooldownSpec,
     validate_button_cooldown,
 )
+from .forms import Form
 
 _EMBED_KNOWN_KEYS = {
     "title",
@@ -78,7 +83,7 @@ _EMBED_KNOWN_KEYS = {
     "footer",
     "timestamp",
 }
-_BUTTON_KNOWN_KEYS = {"id", "label", "style", "emoji", "url"}
+_BUTTON_KNOWN_KEYS = {"id", "label", "style", "emoji", "url", "form"}
 
 
 def _slugify(label: str) -> str:
@@ -482,6 +487,25 @@ class Button:
         self.url = resolved_url
         self.cooldown: CooldownSpec = cooldown
         self._extra: dict[str, object] = {}
+        # AMENDMENT-10: set only by `Button.form` / `from_dict` on a form
+        # button. `form_def` is the validated definition; `_form_wire` keeps a
+        # hydrated server object this SDK could not re-validate (a newer
+        # field type), so reading a message never fails on it.
+        self.form_def: Form | None = None
+        self._form_wire: dict[str, object] | None = None
+
+    @classmethod
+    def form(cls, label: str, form: Form, emoji: str | None = None) -> Button:
+        """A button that opens `form` (AMENDMENT-10). Its id is `form.id`, so a
+        `form.submitted` event names the form it came from. A tap opens the
+        form sheet and never produces a `button.pressed` event. No `url` and no
+        `cooldown` parameter on purpose: the server refuses both on a form
+        button, and rate-limits submissions itself. At most 2 form buttons per
+        message."""
+        btn = cls(label, id=form.id, style="primary", emoji=emoji)
+        btn.style = FORM_BUTTON_STYLE
+        btn.form_def = form
+        return btn
 
     @classmethod
     def link(
@@ -503,10 +527,21 @@ class Button:
             d["emoji"] = self.emoji
         if self.url is not None:
             d["url"] = self.url
+        if self.style == FORM_BUTTON_STYLE:
+            if self.form_def is not None:
+                d["form"] = self.form_def.to_dict()
+            elif self._form_wire is not None:
+                d["form"] = self._form_wire
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> Button:
+    def from_dict(cls, data: dict[str, object], *, lenient: bool = False) -> Button:
+        """Rebuild a button from its wire shape. A raw dict is validated to the
+        same caps as a builder. `lenient=True` is for hydrating a message the
+        server sent: a form object this SDK cannot re-validate (a field type
+        newer than this version) is kept as it came instead of raising."""
+        if data.get("style") == FORM_BUTTON_STYLE:
+            return cls._form_from_dict(data, lenient)
         label = data.get("label")
         style = data.get("style")
         button_id = data.get("id")
@@ -519,6 +554,36 @@ class Button:
             emoji=emoji if isinstance(emoji, str) else None,
             url=url if isinstance(url, str) else None,
         )
+        btn._extra = {k: v for k, v in data.items() if k not in _BUTTON_KNOWN_KEYS}
+        return btn
+
+    @classmethod
+    def _form_from_dict(cls, data: dict[str, object], lenient: bool) -> Button:
+        if data.get("url"):
+            raise ValueError(CAP_URL_ON_NON_LINK_BUTTON)
+        if not lenient and "cooldown" in data:
+            raise ValueError(CAP_COOLDOWN_ON_FORM_BUTTON)
+        label = data.get("label")
+        button_id = data.get("id")
+        emoji = data.get("emoji")
+        btn = cls(
+            label=str(label) if label is not None else "",
+            id=str(button_id) if isinstance(button_id, str) else None,
+            style="primary",
+            emoji=emoji if isinstance(emoji, str) else None,
+        )
+        btn.style = FORM_BUTTON_STYLE
+        wire = data.get("form")
+        if not isinstance(wire, dict):
+            if not lenient:
+                raise ValueError("form: a form button needs a form object")
+        else:
+            try:
+                btn.form_def = Form.from_dict(btn.id, wire)
+            except ValueError:
+                if not lenient:
+                    raise
+                btn._form_wire = wire
         btn._extra = {k: v for k, v in data.items() if k not in _BUTTON_KNOWN_KEYS}
         return btn
 
@@ -622,8 +687,12 @@ def resolve_buttons(buttons: list[ButtonLike] | None) -> list[Button]:
             raise TypeError(f"buttons entries must be Button or dict, got {type(b)!r}")
         if btn.id in seen_ids:
             raise ValueError(CAP_DUPLICATE_BUTTON_ID)
+        if btn.style == FORM_BUTTON_STYLE and isinstance(btn.cooldown, Cooldown):
+            raise ValueError(CAP_COOLDOWN_ON_FORM_BUTTON)
         seen_ids.add(btn.id)
         result.append(btn)
+    if sum(1 for b in result if b.style == FORM_BUTTON_STYLE) > MAX_FORM_BUTTONS:
+        raise ValueError(CAP_TOO_MANY_FORM_BUTTONS)
     return result
 
 

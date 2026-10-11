@@ -186,6 +186,7 @@ One class per event family, and each class declares only the fields its own even
 | `member.joined` / `member.left` | `MemberContext` | `user` |
 | `bot.added` / `bot.removed` | `BotContext` | `actor` |
 | `reaction.added` | `ReactionContext` | `sender`, `message` (id only), `emoji` |
+| `form.submitted` | `FormContext` | `user`, `button`, `interaction`, `message` (id only), `values`, `raw_values`, `submitted_at`, `ack()` |
 | anything else | `EventContext` | `sender`, `user`, `actor`, `message`, `emoji`, every one optional |
 
 `chat`, `event` and all six actions come from `BaseContext`, so they are on every context
@@ -510,6 +511,87 @@ async def answered(ctx: ButtonContext) -> None:
 construction: the server refuses everyone else before your handler ever runs, so there is
 nothing on the press for it to expose. If you need the lock on a card you are acking, you
 already have it: you set it on the send.
+
+## Forms
+
+A form button opens a sheet of up to five typed fields: text, a whole number, a decimal, an
+email, a link, a phone number, a choice, a yes/no switch. The person fills it in and submits;
+only your bot receives the answers. It is one more button kind on the card you already send.
+
+```python
+from aurival import Button, Embed, Field, define_form
+
+trip = define_form(
+    id="trip_signup",
+    title="Trip sign-up",
+    submit_label="Sign up",
+    fields={
+        "name": Field.string("Name", min_length=2, max_length=40),
+        "seats": Field.integer("Seats you can offer", min=0, max=6, required=False),
+        "email": Field.email("Email"),
+        "size": Field.select("Shirt size", options=[("s", "S"), ("m", "M"), ("l", "L")]),
+        "can_drive": Field.boolean("I can drive"),
+    },
+)
+
+card = Embed(title="Ridge trail, Oct 18", description="Sign up so we can plan cars and food.")
+ask = Button.form("Sign up", trip, emoji="🥾")
+await ctx.reply(embeds=[card], buttons=[ask])
+```
+
+```python
+from aurival import FormContext
+
+@bot.on_form(trip)                       # or @bot.on("form.submitted") for every form
+async def signed_up(ctx: FormContext) -> None:
+    seats = ctx.values.int("seats")      # int | None
+    can_drive = ctx.values.bool("can_drive")  # bool, never None
+    size = ctx.values.choice("size")     # str | None, the option's value
+    await ctx.ack(embeds=[Embed(title="Ridge trail, Oct 18", description="Saved.")])
+```
+
+The field ids are the keys of `fields`, in the order the sheet shows them. `Field.string`,
+`.paragraph`, `.integer`, `.decimal`, `.email`, `.url`, `.phone`, `.select` and `.boolean` each
+take only the properties their type allows (a `placeholder` on a `select`, or `required` on a
+`boolean`, is a `TypeError` at the call), and every cap is checked before anything is sent: a
+violation is a `ValueError` whose message starts with a path such as `integer.min`. A message
+carries at most two form buttons, and a form button takes no `url` and no `cooldown`.
+
+**A card patch is public to every member of the chat.** Never echo an answer into the card you
+ack with: say "Saved" or "11 of 14 spots taken". For a private reply, send a DM; there are no
+ephemeral messages.
+
+### Reading the answers
+
+`ctx.values` is typed. Every declared field is present; an unanswered optional field is `None`.
+
+| accessor | returns | for |
+|---|---|---|
+| `.int(name)` | `int \| None` | `integer` |
+| `.decimal(name)` | `decimal.Decimal \| None` | `decimal` (and an `integer` read as an exact number) |
+| `.str(name)` | `str \| None` | `string`, `paragraph`, `email`, `url`, `phone` |
+| `.choice(name)` | `str \| None` | `select`: the chosen option's `value` |
+| `.bool(name)` | `bool` | `boolean`; never `None` |
+
+An accessor that finds the wrong type, or a name the form never declared, raises
+`FormValueError` (a `ValueError` and an `AurivalError`) rather than handing back something that
+only looks right. `.int` never accepts a boolean, although `isinstance(True, int)` is `True`
+in Python. `ctx.values[name]`, `.get(name)`, `name in ctx.values` and `.keys()` read what is
+stored.
+
+Decimals are never floats. The form event is decoded with `parse_float=Decimal` (this event
+only; every other event keeps its plain floats), so `2.10` arrives as `Decimal("2.10")` and
+keeps its scale, and a value with eighteen digits loses nothing. `ctx.raw_values` maps each
+field id to the exact JSON text the server sent, such as `"12.50"`, for the cases where the
+text itself matters.
+
+### Acking a submission
+
+`ctx.ack()` is the call a button press uses: nothing at all, a `text`, or a replacement card
+(`embeds`, `buttons`, `for_user`). There is **no cooldown for a form**: `ack` takes no
+`cooldown` argument, the SDK never answers a submission with its own cooldown notice, and the
+server rate-limits submissions itself. `submission="once"` closes the form for everyone after
+the first accepted answer; the default `"per_user"` lets each member answer once.
 
 ## Cooldowns
 

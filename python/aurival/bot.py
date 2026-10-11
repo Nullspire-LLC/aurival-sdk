@@ -41,12 +41,15 @@ from .events import (
     Context,
     Event,
     EventContext,
+    FormContext,
+    FormEventType,
     MemberContext,
     MemberEventType,
     ReactionContext,
     ReactionEventType,
     context_for,
 )
+from .forms import Form
 from .http import DEFAULT_HOST, HttpClient
 from .socket import Socket
 from .status import StatusReporter
@@ -62,6 +65,7 @@ MemberHandler = Callable[[MemberContext], Awaitable[None]]
 BotHandler = Callable[[BotContext], Awaitable[None]]
 ReactionHandler = Callable[[ReactionContext], Awaitable[None]]
 ButtonHandler = Callable[[ButtonContext], Awaitable[None]]
+FormHandler = Callable[[FormContext], Awaitable[None]]
 EventHandler = Callable[[EventContext], Awaitable[None]]
 # What the registry stores: every `on()` handler, whatever context class its
 # overload promised it. `Any` because the overloads are the typed door and the
@@ -285,6 +289,12 @@ class Bot:
     @overload
     def on(self, event_type: ButtonEventType, fn: ButtonHandler) -> ButtonHandler: ...
 
+    @overload
+    def on(self, event_type: FormEventType) -> Callable[[FormHandler], FormHandler]: ...  # type: ignore[overload-overlap]
+
+    @overload
+    def on(self, event_type: FormEventType, fn: FormHandler) -> FormHandler: ...
+
     # The plain-`str` pair is the forward-compatibility door: a type this SDK
     # does not name yet gets an `EventContext`. Typed against `EventHandler`,
     # not `Any`, so a handler of the wrong family is refused in the direct-call
@@ -308,6 +318,7 @@ class Bot:
             bot.added, bot.removed       BotContext       ctx.actor
             reaction.added               ReactionContext  ctx.sender, ctx.message, ctx.emoji
             button.pressed               ButtonContext    ctx.button, ctx.interaction, ctx.ack()
+            form.submitted               FormContext      ctx.values, ctx.raw_values, ctx.ack()
             anything else                EventContext     every field optional
 
         Distinct registry from `@bot.command`; multiple handlers for the same
@@ -334,6 +345,31 @@ class Bot:
             return inner
 
         return decorate
+
+    @overload
+    def on_form(self, form: Form) -> Callable[[FormHandler], FormHandler]: ...
+
+    @overload
+    def on_form(self, form: Form, fn: FormHandler) -> FormHandler: ...
+
+    def on_form(self, form: Form, fn: FormHandler | None = None) -> Any:
+        """Sugar for `bot.on("form.submitted")` filtered to one form: the
+        handler runs only for submissions of `form` (its id is the button id the
+        event carries). As a decorator, `@bot.on_form(form)`, or a direct call,
+        `bot.on_form(form, fn)`. Like every generic handler it may be
+        registered more than once; all matching handlers run in order."""
+
+        def register(inner: FormHandler) -> FormHandler:
+            async def filtered(ctx: FormContext) -> None:
+                if ctx.button == form.id:
+                    await inner(ctx)
+
+            self._event_handlers.setdefault("form.submitted", []).append(filtered)
+            return inner
+
+        if fn is not None:
+            return register(fn)
+        return register
 
     def _has_event_handler(self, event_type: str) -> bool:
         if event_type == EVENT_BUTTON_PRESSED:

@@ -128,6 +128,26 @@ def test_too_many_problems_is_now_on_the_wire_and_still_mapped():
     assert issubclass(errors.TooManyProblems, errors.InvalidRequestError)
 
 
+def test_invalid_component_maps_to_its_own_class_and_is_in_the_go_catalogue():
+    # AMENDMENT-10 §1: one code for every form-button refusal (400).
+    assert CATALOGUE["invalid_component"] == "invalid_request_error"
+    assert errors.CODE_CLASSES["invalid_component"] is errors.InvalidComponent
+    assert issubclass(errors.InvalidComponent, errors.InvalidRequestError)
+    payload = {
+        "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_component",
+            "message": "a card component is invalid at /buttons/0/form/fields/2/min",
+            "doc_url": "https://bots.aurival.com/docs/errors#invalid_component",
+            "request_id": "req_form1",
+        }
+    }
+    exc = errors.from_envelope(payload, status=400)
+    assert isinstance(exc, errors.InvalidComponent)
+    assert exc.status == 400
+    assert "/buttons/0/form/fields/2/min" in exc.message
+
+
 def test_from_envelope_known_code_and_type():
     payload = {
         "error": {

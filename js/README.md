@@ -606,6 +606,88 @@ instances: a bot running two processes has two independent buckets, and a deploy
 bucket it had. Cooldowns pace a conversation. They are not a quota, and they are not the abuse
 bound — the server keeps its own floor underneath them.
 
+## Forms
+
+A card can carry a form. A member presses a form button, fills in up to five typed fields in a
+sheet, and your bot receives the answers as one `form.submitted` event.
+
+```ts
+import { Bot, Button, Embed, Field, defineForm } from 'aurival';
+
+const signup = defineForm({
+  id: 'trip_signup',
+  title: 'Trip sign-up',
+  submitLabel: 'Sign up',
+  fields: {
+    name: Field.string({ label: 'Name', minLength: 2, maxLength: 40 }),
+    seats: Field.integer({ label: 'Seats you can offer', min: 0, max: 6, required: false }),
+    email: Field.email({ label: 'Email' }),
+    size: Field.select({
+      label: 'Shirt size',
+      options: [
+        { value: 's', label: 'S' },
+        { value: 'm', label: 'M' },
+        { value: 'l', label: 'L' },
+      ],
+    }),
+    can_drive: Field.boolean({ label: 'I can drive' }),
+  },
+});
+
+const bot = new Bot();
+
+bot.command('trip', 'Post the trip sign-up', async (ctx) => {
+  await ctx.reply({
+    embeds: [new Embed({ title: 'Ridge trail, Oct 18' })],
+    buttons: [Button.form({ label: 'Sign up', emoji: '🥾', form: signup })],
+  });
+});
+
+bot.onForm(signup, async (ctx) => {
+  // ctx.values is typed from the form: name is string, seats is number | null,
+  // size is 's' | 'm' | 'l', can_drive is boolean.
+  const { name, seats } = ctx.values;
+  await ctx.ack({
+    embeds: [new Embed({ title: 'Ridge trail, Oct 18', description: '11 of 14 spots taken.' })],
+  });
+});
+```
+
+Field types: `Field.string`, `paragraph`, `integer`, `decimal`, `email`, `url`, `phone`, `select`
+and `boolean`. Every field is required unless you pass `required: false`, which makes its answer
+`null` when left empty (a boolean is never `null` and takes no `required`). The constructors
+check the caps client side and throw before anything is sent: a form has 1 to 5 fields, a title
+up to 45 characters and a submit label up to 24, a field label up to 45, a select 2 to 10
+options, and a key a field type does not allow (`min` on a string, `placeholder` on a select) is
+refused rather than dropped. A message carries at most 2 form buttons, and a form button cannot
+carry a cooldown.
+
+`ctx` on a form submission has `.chat`, `.user`, `.message`, `.button` (the form id),
+`.interaction`, `.values`, `.rawValues`, `.submittedAt` and `ack()`. Use `bot.onForm(form, handler)`
+for typed values, or `bot.on('form.submitted', handler)` for every form with untyped values.
+A field id is `[a-z0-9_]`, up to 32 characters. An all-digit id such as `1` is a JS integer key,
+which objects order ahead of the other keys, so the field order on the wire follows that object
+order; name fields with a letter first if order matters.
+
+**A card patch is public to every member: never echo an answer into the card; use a DM for a
+private reply.** `ack({ embeds, buttons })` rewrites the card for everyone in the chat.
+
+### Decimals in JavaScript
+
+`ctx.values` is what `JSON.parse` made of the frame, so a `decimal` is a JS double. `2.10`
+arrives as `2.1`, and a value past about 15 significant digits loses precision:
+`999999999999.999999` becomes `1000000000000`. When the exact digits matter (money), read
+`ctx.rawValues`, the exact JSON text of each answer: `ctx.rawValues.amount` is `"12.50"`, a string
+you can hand to a decimal library. `rawValues` sits on the context, not inside `values`, so no
+field id is reserved.
+
+### Acking a form
+
+`ctx.ack()` works like a button's ack (nothing, `{ text }`, or a card patch with `embeds`,
+`buttons` and `forUser`), with one difference: **a form ack has no cooldown.** `cooldown` is not
+in its type and is refused at runtime. The server rate-limits submissions itself, and the SDK
+never acks a form for you.
+
 ## Upgrading from 0.2.x
 
 There is one `Context` per event family now, instead of one class for every event with most of

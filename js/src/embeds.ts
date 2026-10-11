@@ -32,6 +32,9 @@ import {
   CAP_EMBEDS_TOO_LONG,
   CAP_FIELD_NAME_TOO_LONG,
   CAP_FIELD_VALUE_TOO_LONG,
+  CAP_FORM_BUTTON_COOLDOWN,
+  CAP_FORM_BUTTON_MISSING_FORM,
+  CAP_FORM_ON_NON_FORM_BUTTON,
   CAP_FOOTER_TEXT_TOO_LONG,
   CAP_IMAGE_URL_NOT_HTTPS,
   CAP_IMAGE_URL_TOO_LONG,
@@ -44,6 +47,7 @@ import {
   CAP_TOO_MANY_BUTTONS,
   CAP_TOO_MANY_EMBEDS,
   CAP_TOO_MANY_FIELDS,
+  CAP_TOO_MANY_FORM_BUTTONS,
   CAP_URL_ON_NON_LINK_BUTTON,
   MAX_AUTHOR_NAME_LENGTH,
   MAX_BUTTON_EMOJI_RUNES,
@@ -56,6 +60,7 @@ import {
   MAX_FIELD_NAME_LENGTH,
   MAX_FIELD_VALUE_LENGTH,
   MAX_FOOTER_TEXT_LENGTH,
+  MAX_FORM_BUTTONS,
   MAX_IMAGE_URL_RUNES,
   MAX_LABEL_RUNES,
   MAX_LINK_URL_RUNES,
@@ -63,6 +68,7 @@ import {
 } from './caps.js';
 import { CAP_LINK_BUTTON_COOLDOWN, Cooldown, normalizeCooldownOption } from './cooldown.js';
 import type { CooldownOption } from './cooldown.js';
+import { FormDefinition } from './forms.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -498,6 +504,12 @@ export interface ButtonInit {
    * (a link press never round-trips, so it can never carry a cooldown).
    */
   cooldown?: CooldownOption;
+  /**
+   * AMENDMENT-10: the form a `style: 'form'` button opens, either a
+   * `defineForm` result or an already-serialised wire `form` object. Use
+   * `Button.form` rather than setting this by hand.
+   */
+  form?: FormDefinition<object> | Record<string, unknown>;
 }
 
 function slugify(label: string): string {
@@ -524,6 +536,13 @@ function validateButtonShape(button: Button): void {
   } else if (button.url !== undefined) {
     throw new Error(CAP_URL_ON_NON_LINK_BUTTON);
   }
+  // AMENDMENT-10 §1: a form button carries its whole definition in `form`,
+  // and nothing else does.
+  if (button.style === 'form') {
+    if (button.form === undefined) throw new Error(CAP_FORM_BUTTON_MISSING_FORM);
+  } else if (button.form !== undefined) {
+    throw new Error(CAP_FORM_ON_NON_FORM_BUTTON);
+  }
   if (button.url !== undefined) requireLinkUrl(button.url);
   // The emoji never counts toward the label cap (§3): it is its own field,
   // and folding it in would make one cap mean two things.
@@ -536,6 +555,11 @@ function validateButtonShape(button: Button): void {
   if (button.cooldown !== undefined) {
     if (button.style === 'link' && button.cooldown !== null) {
       throw new Error(CAP_LINK_BUTTON_COOLDOWN);
+    }
+    // A form submission never round-trips as `button.pressed` either, and the
+    // server rate-limits submissions itself (AMENDMENT-10 §5).
+    if (button.style === 'form' && button.cooldown !== null) {
+      throw new Error(CAP_FORM_BUTTON_COOLDOWN);
     }
     // `button.cooldown` is not `undefined` here (the outer guard), so
     // `normalizeCooldownOption` cannot hand back `undefined` either.
@@ -552,6 +576,8 @@ export class Button {
   style: string;
   emoji?: string;
   url?: string;
+  /** The wire `form` object of a `style: 'form'` button (AMENDMENT-10); absent on every other style. */
+  form?: Record<string, unknown>;
   /**
    * This button's own cooldown (AMENDMENT-08 §3), normalized to a real
    * `Cooldown` by `validateButtonShape` (a plain literal in, a `Cooldown`
@@ -568,6 +594,10 @@ export class Button {
     this.id = init.id ?? slugify(init.label);
     if (init.emoji !== undefined) this.emoji = init.emoji;
     if (init.url !== undefined) this.url = init.url;
+    if (init.form !== undefined) {
+      const wire = init.form instanceof FormDefinition ? init.form.toJSON() : asRecord(init.form);
+      if (wire !== null) this.form = wire;
+    }
     // Raw (possibly a literal, not yet a `Cooldown`) until `validateButtonShape`
     // normalizes it below — the field's public type is its POST-validation
     // shape, matching every other builder field this constructor validates
@@ -590,10 +620,37 @@ export class Button {
     return new Button(build);
   }
 
+  /**
+   * AMENDMENT-10: a button that opens a form sheet. The button id is the
+   * form's id, so `bot.onForm(form, ...)` and the `form.submitted` event find
+   * each other with no second name to keep in step. A tap opens the sheet and
+   * a submit arrives as `form.submitted`; a form button never round-trips as
+   * `button.pressed`, so it takes no `cooldown` and no `url`.
+   */
+  static form(init: { label: string; form: FormDefinition<object>; emoji?: string }): Button {
+    if (!(init.form instanceof FormDefinition)) {
+      throw new Error(CAP_FORM_BUTTON_MISSING_FORM);
+    }
+    const build: ButtonInit = {
+      label: init.label,
+      style: 'form',
+      id: init.form.id,
+      form: init.form,
+    };
+    if (init.emoji !== undefined) build.emoji = init.emoji;
+    // Not part of the typed init, but a plain-JS caller can still pass them;
+    // the constructor refuses both with the sentence that names the fix.
+    const loose = init as Record<string, unknown>;
+    if (loose['url'] !== undefined) build.url = loose['url'] as string;
+    if (loose['cooldown'] !== undefined) build.cooldown = loose['cooldown'] as CooldownOption;
+    return new Button(build);
+  }
+
   toJSON(): Record<string, unknown> {
     const out: Record<string, unknown> = { id: this.id, label: this.label, style: this.style };
     if (this.emoji !== undefined) out['emoji'] = this.emoji;
     if (this.url !== undefined) out['url'] = this.url;
+    if (this.form !== undefined) out['form'] = this.form;
     return out;
   }
 
@@ -611,6 +668,8 @@ export class Button {
     button.id = id ?? slugify(label);
     if (emoji !== undefined) button.emoji = emoji;
     if (url !== undefined) button.url = url;
+    const form = asRecord(record['form']);
+    if (form !== null) button.form = form;
     // Never present on a real wire button (cooldowns never reach the wire,
     // §2) — this only matters for the OTHER caller of `fromJSON`,
     // `serialiseButtonsWithCooldowns` decoding a plain-object `ButtonLike` a
@@ -722,6 +781,9 @@ export function serialiseButtonsWithCooldowns(
     if (seen.has(button.id)) throw new Error(CAP_DUPLICATE_BUTTON_ID);
     seen.add(button.id);
     if (button.cooldown !== undefined) cooldowns.set(button.id, button.cooldown);
+  }
+  if (normalised.filter((button) => button.style === 'form').length > MAX_FORM_BUTTONS) {
+    throw new Error(CAP_TOO_MANY_FORM_BUTTONS);
   }
   return { json: normalised.map((button) => button.toJSON()), cooldowns };
 }

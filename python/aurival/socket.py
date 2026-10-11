@@ -29,6 +29,7 @@ from aurival.errors import (
     from_envelope,
 )
 from aurival.events import Event
+from aurival.forms import decode_form_frame
 
 if TYPE_CHECKING:
     from aurival.auth import Auth
@@ -308,7 +309,14 @@ class Socket:
                 elif op == "heartbeat_ack":
                     pass
                 elif op == "event":
-                    await self._handle_event(ws, d, generation)
+                    form_raw: dict[str, str] | None = None
+                    if d.get("type") == "form.submitted":
+                        # AMENDMENT-10 §8: only this event is re-decoded with
+                        # `parse_float=Decimal` (so `2.10` keeps its scale) and
+                        # has its answers' source text captured. Every other
+                        # event keeps the plain float decode above.
+                        d, form_raw = decode_form_frame(msg.data, d)
+                    await self._handle_event(ws, d, generation, form_raw)
                 elif op == "problem":
                     exc = from_envelope(d)
                     self._logger.warning("bot-api problem: %s: %s", exc.code, exc.message)
@@ -410,9 +418,13 @@ class Socket:
             raise
 
     async def _handle_event(
-        self, ws: aiohttp.ClientWebSocketResponse, d: dict, generation: int
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        d: dict,
+        generation: int,
+        raw_values: dict[str, str] | None = None,
     ) -> None:
-        event = Event.from_frame(d)
+        event = Event.from_frame(d, raw_values)
         if not event.id:
             return
         if event.id in self._in_flight:

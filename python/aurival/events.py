@@ -34,6 +34,7 @@ from .embeds import (
     serialise_embeds,
 )
 from .errors import AurivalError
+from .forms import FormValues, reserialise_value
 from .http import OMITTED, Omitted
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ MemberEventType = Literal["member.joined", "member.left"]
 BotEventType = Literal["bot.added", "bot.removed"]
 ReactionEventType = Literal["reaction.added"]
 ButtonEventType = Literal["button.pressed"]
+FormEventType = Literal["form.submitted"]
 EventType = Literal[
     "member.joined",
     "member.left",
@@ -53,6 +55,7 @@ EventType = Literal[
     "bot.removed",
     "reaction.added",
     "button.pressed",
+    "form.submitted",
 ]
 
 
@@ -146,9 +149,14 @@ class Event:
     created_at: str
     sequence: int
     data: dict[str, object]
+    # `form.submitted` only: the exact JSON text of each `data.values` member,
+    # captured from the frame's source text by the socket (AMENDMENT-10 §8).
+    raw_values: dict[str, str] | None = None
 
     @classmethod
-    def from_frame(cls, d: dict[str, object]) -> Event:
+    def from_frame(
+        cls, d: dict[str, object], raw_values: dict[str, str] | None = None
+    ) -> Event:
         """`d` is one WireEvent (`{object, id, type, created_at, sequence,
         data}`) — the `event` frame's payload, top-level, not re-wrapped."""
         data = d.get("data")
@@ -159,6 +167,7 @@ class Event:
             created_at=str(d.get("created_at", "")),
             sequence=int(seq) if isinstance(seq, (int, float, str)) and seq else 0,
             data=data if isinstance(data, dict) else {},
+            raw_values=raw_values,
         )
 
 
@@ -248,7 +257,7 @@ def _embeds_from_wire(v: object) -> list[Embed]:
 def _buttons_from_wire(v: object) -> list[Button]:
     if not isinstance(v, list):
         return []
-    return [Button.from_dict(b) for b in v if isinstance(b, dict)]
+    return [Button.from_dict(b, lenient=True) for b in v if isinstance(b, dict)]
 
 
 def _button_used_from_wire(v: object) -> ButtonUsed | None:
@@ -836,6 +845,76 @@ class ButtonContext(BaseContext):
         _record_button_cooldowns(self._http, self.message.id, UNSET, resolved_buttons)
 
 
+class FormContext(BaseContext):
+    """What a `form.submitted` handler receives (AMENDMENT-10 §4): the `user`
+    who submitted, the `button` id (the form's id), the `interaction` id to
+    `ack()`, the `message` the form was on (id-only, like `ButtonContext`), when
+    it was `submitted_at`, and the typed answers.
+
+    `values` reads the answers through typed accessors (`.int`, `.decimal`,
+    `.str`, `.bool`, `.choice`) that raise `FormValueError` on a type mismatch.
+    `raw_values` maps each field id to the exact JSON text the server sent, so
+    `12.50` is `"12.50"` there. `ctx.reply()` quotes the form's message.
+
+    A card patch through `ack()` is public to every member of the chat: never
+    echo an answer into it. Use a DM for a private reply."""
+
+    def __init__(
+        self,
+        *,
+        event: Event,
+        http: HttpClient,
+        chat: Chat,
+        user: User,
+        message: Message,
+        button: str,
+        interaction: str,
+        submitted_at: str,
+        values: FormValues,
+        raw_values: dict[str, str],
+    ) -> None:
+        super().__init__(event=event, http=http, chat=chat)
+        self.user = user
+        self.message = message
+        self.button = button
+        self.interaction = interaction
+        self.submitted_at = submitted_at
+        self.values = values
+        self.raw_values = raw_values
+
+    def _quotes(self) -> str | None:
+        return self.message.id or None
+
+    async def ack(
+        self,
+        text: str | None = None,
+        *,
+        embeds: list[EmbedLike] | None = None,
+        buttons: list[ButtonLike] | None = None,
+        for_user: User | str | Omitted | None = OMITTED,
+    ) -> None:
+        """Acknowledge the submission — `POST /v1/interactions/{id}/ack`, the
+        same call a button press uses, with the same options: nothing (a plain
+        ack), `text`, or a replacement card (`embeds`, `buttons`, `for_user`,
+        cleared and moved exactly as `ButtonContext.ack` does).
+
+        There is no `cooldown` parameter: a cooldown ack is not available for
+        form submissions, the server rate-limits them itself, and the SDK's own
+        automatic cooldown never runs for a form.
+
+        A card patch is PUBLIC to every member. Never put an answer in it; say
+        "Saved" or "11 of 14 spots taken". A private reply is a DM."""
+        resolved_buttons = resolve_buttons(buttons) if buttons else []
+        await self._http.ack_interaction(
+            self.interaction,
+            text,
+            embeds=_embeds_part(embeds),
+            buttons=_buttons_part(buttons),
+            for_user=_for_user_part(for_user),
+        )
+        _record_button_cooldowns(self._http, self.message.id, UNSET, resolved_buttons)
+
+
 class EventContext(BaseContext):
     """What a handler for a type this SDK does not know yet receives. Never
     raises — a bot must keep running against a server that has shipped an
@@ -867,7 +946,13 @@ class EventContext(BaseContext):
 
 
 AnyContext = (
-    Context | MemberContext | BotContext | ReactionContext | ButtonContext | EventContext
+    Context
+    | MemberContext
+    | BotContext
+    | ReactionContext
+    | ButtonContext
+    | FormContext
+    | EventContext
 )
 
 
@@ -920,6 +1005,36 @@ def context_for(event: Event, *, http: HttpClient) -> AnyContext:
             button=str(data.get("button", "")),
             interaction=(
                 str(interaction) if isinstance(interaction, str) and interaction else event.id
+            ),
+        )
+    if event.type == "form.submitted":
+        interaction = data.get("interaction")
+        raw_answers = data.get("values")
+        values: dict[str, object] = raw_answers if isinstance(raw_answers, dict) else {}
+        raw_user = data.get("user")
+        user: dict[str, object] = raw_user if isinstance(raw_user, dict) else {}
+        username = str(user.get("username", user.get("handle", "")))
+        submitted_at = data.get("submitted_at")
+        return FormContext(
+            event=event,
+            http=http,
+            chat=_chat_field_or_ref(data),
+            user=User(
+                id=str(user.get("id", "")),
+                handle=username,
+                name=str(user.get("name", username)),
+            ),
+            message=_message_from_ref(data.get("message")) or _EMPTY_MESSAGE,
+            button=str(data.get("button", "")),
+            interaction=(
+                str(interaction) if isinstance(interaction, str) and interaction else event.id
+            ),
+            submitted_at=submitted_at if isinstance(submitted_at, str) else "",
+            values=FormValues(values),
+            raw_values=(
+                dict(event.raw_values)
+                if event.raw_values is not None
+                else {k: reserialise_value(v) for k, v in values.items()}
             ),
         )
     emoji = data.get("emoji")

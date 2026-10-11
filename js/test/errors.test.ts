@@ -39,6 +39,7 @@ import {
   EmbedURLNotHTTPS,
   EmptyText,
   ForUserNotMember,
+  InvalidComponent,
   FrameInvalid,
   FrameTooLarge,
   IdempotencyKeyInvalid,
@@ -134,6 +135,9 @@ import {
 // `embed_field_name_too_long`, `embed_field_value_too_long`,
 // `embed_author_name_too_long`, `embed_footer_text_too_long`,
 // `image_url_too_long`, `embeds_too_long` — taking it to 72.
+// AMENDMENT-10 §1 (bot card forms) then adds `invalid_component`
+// (invalid_request_error, 400), taking it to 73. Unlike the ahead-of-Go rows
+// above, this one HAS its Go catalogue row (`CodeInvalidComponent`).
 const EXPECTED_CODES = [
   'access_token_expired',
   'access_token_invalid',
@@ -208,6 +212,7 @@ const EXPECTED_CODES = [
   'embed_footer_text_too_long',
   'image_url_too_long',
   'embeds_too_long',
+  'invalid_component',
 ] as const;
 
 // code -> [expected class, expected wire type it must be an instance of].
@@ -285,6 +290,7 @@ const EXPECTED: Record<string, [AurivalAPIErrorClass, string]> = {
   embed_footer_text_too_long: [EmbedFooterTextTooLong, 'invalid_request_error'],
   image_url_too_long: [ImageURLTooLong, 'invalid_request_error'],
   embeds_too_long: [EmbedsTooLong, 'invalid_request_error'],
+  invalid_component: [InvalidComponent, 'invalid_request_error'],
 };
 
 function envelopeFor(code: string, type: string): Record<string, unknown> {
@@ -300,7 +306,7 @@ function envelopeFor(code: string, type: string): Record<string, unknown> {
 }
 
 describe('CODE_CLASSES catalogue', () => {
-  it('has exactly the expected 66-name key set (a deleted or added row fails this)', () => {
+  it('has exactly the expected 73-name key set (a deleted or added row fails this)', () => {
     expect(Object.keys(CODE_CLASSES).sort()).toEqual([...EXPECTED_CODES].sort());
     expect(Object.keys(EXPECTED).sort()).toEqual([...EXPECTED_CODES].sort());
   });

@@ -124,6 +124,8 @@ export class ServerState {
 
 export interface WsConn {
   send(obj: unknown): void;
+  /** One text frame with exactly this text, so a test controls the bytes `JSON.stringify` would normalise (`12.50`). */
+  sendRaw(text: string): void;
   /** A bare close, no `bye` — a network fault by contract. */
   close(): void;
 }
@@ -180,6 +182,10 @@ export async function startGateway(
       send(obj: unknown) {
         if (closed) return;
         socket.write(encodeText(JSON.stringify(obj)));
+      },
+      sendRaw(text: string) {
+        if (closed) return;
+        socket.write(encodeText(text));
       },
       close() {
         if (closed) return;

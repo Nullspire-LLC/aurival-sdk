@@ -206,6 +206,14 @@ class ForUserNotMember(InvalidRequestError):
     """
 
 
+class InvalidComponent(InvalidRequestError):
+    """`invalid_component`: a form button on a card was refused
+    (AMENDMENT-10 §1). One code covers every form refusal; the server's
+    message names a JSON pointer into the card
+    (`/buttons/0/form/fields/2/min`) pointing at the property to fix.
+    """
+
+
 class CooldownRetryAfterInvalid(InvalidRequestError):
     """`cooldown_retry_after_invalid`: a `cooldown.retry_after_ms` on a
     button-press ack was not a whole number of milliseconds between the
@@ -521,6 +529,7 @@ CODE_CLASSES: dict[str, type[AurivalAPIError]] = {
     # AMENDMENT-09 §8.1: no wire sender at HEAD. See TooManyAliases/ForUserNotMember.
     "too_many_aliases": TooManyAliases,
     "for_user_not_member": ForUserNotMember,
+    "invalid_component": InvalidComponent,
 }
 
 

@@ -451,7 +451,7 @@ export class Socket {
         } else if (op === 'heartbeat_ack') {
           // ignore
         } else if (op === 'event') {
-          await this.#handleEvent(ws, d, generation);
+          await this.#handleEvent(ws, d, generation, item.data);
         } else if (op === 'problem') {
           const exc = fromEnvelope(d);
           this.#logger.warn(`bot-api problem: ${exc.code}: ${exc.message}`);
@@ -565,8 +565,13 @@ export class Socket {
     };
   }
 
-  async #handleEvent(ws: WebSocket, d: Record<string, unknown>, generation: number): Promise<void> {
-    const event = Event.fromFrame(d);
+  async #handleEvent(
+    ws: WebSocket,
+    d: Record<string, unknown>,
+    generation: number,
+    frameText: string,
+  ): Promise<void> {
+    const event = Event.fromFrame(d, frameText);
     if (!event.id) return;
     if (this.#inFlight.has(event.id)) return; // never dispatch an id whose handler is in flight
     if (this.#seen.has(event.id)) {

@@ -37,7 +37,14 @@
  * The new server caps amendment then adds six more error classes, mirrored
  * in both SDKs: `EmbedFieldNameTooLong`, `EmbedFieldValueTooLong`,
  * `EmbedAuthorNameTooLong`, `EmbedFooterTextTooLong`, `ImageURLTooLong` and
- * `EmbedsTooLong` — taking the count to 111.
+ * `EmbedsTooLong` — taking the count to 111. `ChatReadOnly`
+ * (`chat_read_only`, permission_error 403) is one more mirrored error class,
+ * taking it to 112.
+ *
+ * AMENDMENT-10 (0.10.0, bot card forms) adds four mirrored runtime names,
+ * `Field`, `FormContext`, `FormDefinition` and `defineForm` (Python:
+ * `define_form`), plus the mirrored error class `InvalidComponent` — taking
+ * the count to 117 (116 mirrored names plus the JS-only `MentionLike`).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -128,7 +135,10 @@ const EXPECTED = [
   'Event',
   'EventContext',
   'EventType',
+  'Field',
   'ForUserNotMember',
+  'FormContext',
+  'FormDefinition',
   'FrameInvalid',
   'FrameTooLarge',
   'IdempotencyKeyInvalid',
@@ -138,6 +148,7 @@ const EXPECTED = [
   'InternalError',
   'InvalidButtonStyle',
   'InvalidCommandName',
+  'InvalidComponent',
   'InvalidJSON',
   'InvalidRequestError',
   'KeyAlreadyPaired',
@@ -184,6 +195,7 @@ const EXPECTED = [
   'UnknownParameter',
   'User',
   'actionForBye',
+  'defineForm',
   'fromEnvelope',
   'mention',
   'version',
@@ -211,8 +223,12 @@ describe('the public surface', () => {
   // mirrored in both SDKs — 110 mirrored names plus `MentionLike`, 111 total.
   // `ChatReadOnly` (`chat_read_only`, permission_error 403) then adds one more,
   // mirrored in both SDKs — 111 mirrored names plus `MentionLike`, 112 total.
-  it('is exactly the 111 Python names JS mirrors, plus the JS-only MentionLike type', () => {
-    expect(EXPECTED.length).toBe(112);
+  // AMENDMENT-10 (bot card forms) adds four runtime names, `Field`,
+  // `FormContext`, `FormDefinition` and `defineForm` (Python: `define_form`),
+  // and the error class `InvalidComponent`, all mirrored — 116 mirrored names
+  // plus `MentionLike`, 117 total.
+  it('is exactly the 116 Python names JS mirrors, plus the JS-only MentionLike type', () => {
+    expect(EXPECTED.length).toBe(117);
     const runtime = Object.keys(aurival).sort();
     const expectedRuntime = EXPECTED.filter(
       (n) => !(TYPE_ONLY as readonly string[]).includes(n),
@@ -289,6 +305,6 @@ describe('the public surface', () => {
       version: string;
     };
     expect(aurival.version).toBe(manifest.version);
-    expect(aurival.version).toBe('0.9.0');
+    expect(aurival.version).toBe('0.10.0');
   });
 });

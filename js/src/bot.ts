@@ -4,6 +4,7 @@ import { Auth, KeyFile, machineLabel, pair, resolveHost } from './auth.js';
 import type { Machine, MachineKey } from './auth.js';
 import { AurivalError, BotSuspended, ButtonAlreadyUsed, NotFound, RateLimitError, SessionSuperseded } from './errors.js';
 import { Context, Event, contextFor } from './events.js';
+import { FormDefinition } from './forms.js';
 import { DEFAULT_HOST, HttpClient, defaultLogger } from './http.js';
 import type {
   AnyContext,
@@ -13,6 +14,8 @@ import type {
   ButtonEventType,
   Command,
   EventContext,
+  FormContext,
+  FormEventType,
   MemberContext,
   MemberEventType,
   ReactionContext,
@@ -67,6 +70,8 @@ export type BotHandler = (ctx: BotContext) => Promise<void> | void;
 export type ReactionHandler = (ctx: ReactionContext) => Promise<void> | void;
 /** A `button.pressed` handler. */
 export type ButtonHandler = (ctx: ButtonContext) => Promise<void> | void;
+/** A `form.submitted` handler (AMENDMENT-10). */
+export type FormHandler = (ctx: FormContext) => Promise<void> | void;
 /** A handler for an event type this SDK does not name — every field optional. */
 export type EventHandler = (ctx: EventContext) => Promise<void> | void;
 type AnyHandler = (ctx: never) => Promise<void> | void;
@@ -370,6 +375,7 @@ export class Bot {
   on(type: BotEventType, handler: BotHandler): void;
   on(type: ReactionEventType, handler: ReactionHandler): void;
   on(type: ButtonEventType, handler: ButtonHandler): void;
+  on(type: FormEventType, handler: FormHandler): void;
   // `string & {}` keeps the literals above in autocomplete while still
   // accepting a type this SDK has not named yet.
   on(type: string & {}, handler: EventHandler): void;
@@ -381,6 +387,36 @@ export class Bot {
     const handlers = this.#onHandlers.get(type);
     if (handlers === undefined) this.#onHandlers.set(type, [handler]);
     else handlers.push(handler);
+  }
+
+  /**
+   * Register a handler for one form's submissions (AMENDMENT-10). Sugar for
+   * `bot.on('form.submitted', ...)` filtered by the form's button id, with
+   * `ctx.values` typed from the form's fields:
+   *
+   * ```ts
+   * bot.onForm(tripForm, async (ctx) => {
+   *   ctx.values.seats; // number | null
+   *   await ctx.ack({ embeds: [thanks] });
+   * });
+   * ```
+   *
+   * Submissions of other forms skip this handler. The ack is yours to send;
+   * there is no automatic ack and never a cooldown ack for a form.
+   */
+  onForm<V extends object>(
+    form: FormDefinition<V>,
+    handler: (ctx: FormContext<V>) => Promise<void> | void,
+  ): void {
+    if (!(form instanceof FormDefinition)) {
+      throw new AurivalError('bot.onForm() takes a form made with defineForm()');
+    }
+    this.on('form.submitted', async (ctx) => {
+      if (ctx.button !== form.id) return;
+      // The button id is the form's id, so these answers were collected by
+      // exactly this form's fields: narrowing the values type is sound here.
+      await handler(ctx as FormContext<V>);
+    });
   }
 
   /**

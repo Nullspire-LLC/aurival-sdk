@@ -17,7 +17,7 @@ export const MAX_TITLE_LENGTH = 256;
 export const MAX_DESCRIPTION_LENGTH = 1024;
 export const MAX_BUTTON_EMOJI_RUNES = 16;
 export const MAX_LINK_URL_RUNES = 2048;
-export const BUTTON_STYLES = ['primary', 'secondary', 'danger', 'link'] as const;
+export const BUTTON_STYLES = ['primary', 'secondary', 'danger', 'link', 'form'] as const;
 
 export type ButtonStyle = (typeof BUTTON_STYLES)[number];
 
@@ -152,3 +152,43 @@ export const CAP_AUTHOR_NAME_TOO_LONG = `an embed author name is at most ${MAX_A
 export const CAP_FOOTER_TEXT_TOO_LONG = `an embed footer's text is at most ${MAX_FOOTER_TEXT_LENGTH} characters`;
 export const CAP_IMAGE_URL_TOO_LONG = `an image url is at most ${MAX_IMAGE_URL_RUNES} characters`;
 export const CAP_EMBEDS_TOO_LONG = `the embeds on a message carry at most ${MAX_EMBED_TOTAL_LENGTH} characters in total, across every title, description, field name and value, author name and footer text`;
+
+/**
+ * AMENDMENT-10 §1: bot card forms. A form button is one more button kind
+ * (`style: "form"`) whose whole definition lives in one `form` object. The
+ * numbers below are the server's caps, all in Unicode code points unless
+ * noted; the field-level sentences are built in `forms.ts` as a JSON pointer
+ * plus a short reason, because a form error is only useful when it names the
+ * property to fix.
+ */
+export const MAX_FORM_BUTTONS = 2;
+export const MAX_FORM_TITLE_RUNES = 45;
+export const MAX_FORM_SUBMIT_LABEL_RUNES = 24;
+export const MAX_FORM_FIELDS = 5;
+export const MAX_FORM_FIELD_ID_LENGTH = 32;
+export const MAX_FORM_FIELD_LABEL_RUNES = 45;
+export const MAX_FORM_PLACEHOLDER_RUNES = 100;
+export const MAX_FORM_OPTIONS = 10;
+export const MIN_FORM_OPTIONS = 2;
+export const MAX_FORM_OPTION_VALUE_LENGTH = 32;
+export const MAX_FORM_OPTION_LABEL_RUNES = 45;
+export const DEFAULT_STRING_MAX_LENGTH = 100;
+export const MAX_STRING_MAX_LENGTH = 200;
+export const DEFAULT_PARAGRAPH_MAX_LENGTH = 1000;
+export const MAX_PARAGRAPH_MAX_LENGTH = 4000;
+export const MAX_EMAIL_LENGTH = 254;
+export const MAX_FORM_URL_LENGTH = 2048;
+/** Integer bounds are within +/-(2^53 - 1) so every JS bot can hold them. */
+export const MAX_FORM_INTEGER = Number.MAX_SAFE_INTEGER;
+/** The absolute bound of a decimal field's `min`, `max` and values. */
+export const MAX_FORM_DECIMAL_ABS = 1e12;
+export const DEFAULT_DECIMAL_SCALE = 2;
+export const MAX_DECIMAL_SCALE = 6;
+export const FORM_SUBMISSIONS = ['per_user', 'once'] as const;
+
+export const CAP_TOO_MANY_FORM_BUTTONS = `a message carries at most ${MAX_FORM_BUTTONS} form buttons`;
+export const CAP_FORM_BUTTON_COOLDOWN = 'a form button cannot carry a cooldown';
+export const CAP_FORM_BUTTON_MISSING_FORM = 'a form button needs a form';
+export const CAP_FORM_ON_NON_FORM_BUTTON = 'only a form button carries a form';
+/** `ctx.ack` on a `form.submitted` event: the server rate-limits submissions itself (AMENDMENT-10 §5). */
+export const CAP_FORM_ACK_COOLDOWN = 'a form submission cannot be acked with a cooldown';

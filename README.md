@@ -37,6 +37,21 @@ pip install aurival
 npm install aurival
 ```
 
+## Forms
+
+A bot can put a typed form behind a card button: `Button.form` with up to five fields
+(`string`, `paragraph`, `integer`, `decimal`, `email`, `url`, `phone`, `select`, `boolean`).
+The person fills it in a sheet and only your bot receives the answers, as a `form.submitted`
+event with typed values. See the forms section of each SDK's README:
+[`python/`](python/README.md), [`js/`](js/README.md).
+
+- **A card patch is public.** If you ack a submission with new `embeds` or `buttons`, every member
+  of the chat sees them. Never echo an answer into the card. Send a private reply in a DM.
+- **JavaScript decimals.** `JSON.parse` turns a decimal answer into a double, so `2.10` becomes
+  `2.1` and values past about 15 significant digits lose precision. Read `ctx.rawValues` when the
+  exact text matters. Python parses decimals as `Decimal`, so `2.10` keeps its scale.
+- Both SDKs run the same shared vectors in `testdata/form_vectors.json`.
+
 ## Docs
 
 Full documentation, quick-start guides, and the command reference live at

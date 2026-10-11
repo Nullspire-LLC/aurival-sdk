@@ -144,6 +144,13 @@ export class TooManyAliases extends InvalidRequestError {}
 export class ForUserNotMember extends InvalidRequestError {}
 
 /**
+ * `invalid_component` (AMENDMENT-10 §1): one code for every form-button
+ * refusal. The server's message names a JSON pointer into the card
+ * (`/buttons/0/form/fields/2/min`) pointing at the property to fix.
+ */
+export class InvalidComponent extends InvalidRequestError {}
+
+/**
  * `reaction_emoji_too_long` — the emoji argument to `react()`/`unreact()`
  * exceeded the server's >32-byte length clamp (AMENDMENT-04 A-2). This is a
  * size limit, not an allowlist check — there is no disallowed-emoji list to
@@ -403,6 +410,7 @@ export const CODE_CLASSES: Readonly<Record<string, AurivalAPIErrorClass>> = {
   embed_footer_text_too_long: EmbedFooterTextTooLong,
   image_url_too_long: ImageURLTooLong,
   embeds_too_long: EmbedsTooLong,
+  invalid_component: InvalidComponent,
 };
 
 export interface FromEnvelopeOptions {

@@ -68,6 +68,7 @@ export {
   InternalError,
   InvalidButtonStyle,
   InvalidCommandName,
+  InvalidComponent,
   InvalidJSON,
   InvalidRequestError,
   KeyAlreadyPaired,
@@ -116,6 +117,7 @@ export {
   Context,
   Event,
   EventContext,
+  FormContext,
   MemberContext,
   Mention,
   ReactionContext,
@@ -126,15 +128,35 @@ export type {
   Chat,
   Command,
   EventType,
+  FormAckInit,
   MemberPage,
   Message,
   MentionLike,
   User,
 } from './events.js';
+export { Field, FormDefinition, defineForm } from './forms.js';
+export type {
+  AnyFormValues,
+  BooleanOpts,
+  DecimalOpts,
+  EmailOpts,
+  FieldSpec,
+  FieldType,
+  FormInit,
+  FormSubmission,
+  FormValues,
+  IntegerOpts,
+  ParagraphOpts,
+  PhoneOpts,
+  SelectOpts,
+  SelectOption,
+  StringOpts,
+  UrlOpts,
+} from './forms.js';
 export { Button, Embed } from './embeds.js';
 export type { ButtonUsed } from './embeds.js';
 export { BYE_ACTIONS, ByeAction, actionForBye } from './socket.js';
 export { Cooldown } from './cooldown.js';
 
 /** The package version. Pinned to `package.json` by test/index.test.ts. */
-export const version = '0.9.0';
+export const version = '0.10.0';
